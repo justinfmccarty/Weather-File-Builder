@@ -6,29 +6,37 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 from typing import Dict
+from pvlib import irradiance, solarposition
 
 
-def era5_to_dataframe(ds: xr.Dataset, year: int) -> pd.DataFrame:
+def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remove_leap_days: bool = True) -> pd.DataFrame:
     """
-    Convert ERA5 xarray dataset to standardized DataFrame.
+    Convert ERA5 DataFrame or xarray dataset to standardized DataFrame.
     
     Parameters
     ----------
-    ds : xarray.Dataset
+    ds : pandas.DataFrame or xarray.Dataset
         ERA5 dataset for a single point
-    year : int
-        Year of the data
+    latitude : float, optional
+        Latitude of the location (will be added as a column if provided)
+    longitude : float, optional
+        Longitude of the location (will be added as a column if provided)
     
     Returns
     -------
     pandas.DataFrame
         Standardized weather data with columns:
-        Year, Month, Day, Hour, Minute, Temperature, Dew Point, Pressure,
-        Relative Humidity, Wind Speed, Wind Direction, GHI, DHI, DNI,
-        Cloud Cover, Precipitation
+        Year, Month, Day, Hour, Minute, Latitude, Longitude, Temperature, 
+        Dew Point, Pressure, Relative Humidity, Wind Speed, Wind Direction, 
+        GHI, DHI, DNI, Cloud Cover, Precipitation
     """
-    # Convert to DataFrame
-    df = ds.to_dataframe().reset_index()
+    # If input is xarray Dataset, convert to DataFrame
+    if isinstance(ds, xr.Dataset):
+        df = ds.to_dataframe().reset_index()
+    else:
+        df = ds.copy()
+    df.to_csv('/Users/jmccarty/GitHub/weather_file_builder/notebook/debug_era5_input.csv')  # Debug line to inspect input data
+    df['valid_time'] = pd.to_datetime(df['valid_time'])
     
     # Extract time components
     df['Year'] = df['valid_time'].dt.year
@@ -37,6 +45,10 @@ def era5_to_dataframe(ds: xr.Dataset, year: int) -> pd.DataFrame:
     df['Hour'] = df['valid_time'].dt.hour
     df['Minute'] = 0  # ERA5 is hourly
     
+    # Remove leap days if specified
+    if remove_leap_days:
+        df = df[~((df['Month'] == 2) & (df['Day'] == 29))].reset_index(drop=True)
+    
     # Initialize output columns
     output = pd.DataFrame()
     output['Year'] = df['Year']
@@ -44,6 +56,12 @@ def era5_to_dataframe(ds: xr.Dataset, year: int) -> pd.DataFrame:
     output['Day'] = df['Day']
     output['Hour'] = df['Hour']
     output['Minute'] = df['Minute']
+    
+    # Add location information if provided
+    if latitude is not None:
+        output['Latitude'] = latitude
+    if longitude is not None:
+        output['Longitude'] = longitude
     
     # Temperature (K to °C)
     if 't2m' in df.columns:
@@ -72,13 +90,44 @@ def era5_to_dataframe(ds: xr.Dataset, year: int) -> pd.DataFrame:
         # ERA5 provides accumulated radiation, need hourly average
         output['GHI'] = df['ssrd'] / 3600.0
         
-        # Estimate DNI and DHI (simplified - should use solar position models)
-        if 'tcc' in df.columns:
-            cloud_factor = 1 - df['tcc']
-            output['DNI'] = output['GHI'] * cloud_factor * 0.8
-            output['DHI'] = output['GHI'] - output['DNI'] * 0.8
+        # Calculate DNI and DHI using DIRINT method from pvlib
+        if latitude is not None and longitude is not None and 'Pressure' in output.columns and 'Dew Point' in output.columns:
+            # Reconstruct datetime index from output DataFrame (after leap day removal)
+            times = pd.DatetimeIndex(pd.to_datetime(output[['Year', 'Month', 'Day', 'Hour', 'Minute']]))
+            
+            # Calculate solar position
+            solpos = solarposition.get_solarposition(times, latitude, longitude)
+            
+            # Calculate DNI using DIRINT method
+            # Pressure needs to be in Pa (convert from hPa)
+            # Use day of year instead of datetime to avoid pandas version issues
+            
+            
+            # Reset index to ensure proper Series alignment
+            ghi_series = pd.Series(output['GHI'].values, index=times)
+            pressure_series = pd.Series(output['Pressure'].values * 100, index=times)
+            temp_dew_series = pd.Series(output['Dew Point'].values, index=times)
+            
+            dni_dirint = irradiance.dirint(
+                ghi_series, 
+                solpos['zenith'], 
+                times,
+                pressure_series,
+                temp_dew=temp_dew_series
+            )
+            
+            # Calculate DHI using complete irradiance (closure equation)
+            df_complete = irradiance.complete_irradiance(
+                solar_zenith=solpos['apparent_zenith'],
+                ghi=ghi_series,
+                dni=dni_dirint,
+                dhi=None
+            )
+            
+            output['DNI'] = dni_dirint.values
+            output['DHI'] = df_complete['dhi'].values
         else:
-            # If no cloud data, rough estimates
+            # Fallback to simplified model if required inputs are missing
             output['DNI'] = output['GHI'] * 0.7
             output['DHI'] = output['GHI'] * 0.3
     
@@ -90,7 +139,7 @@ def era5_to_dataframe(ds: xr.Dataset, year: int) -> pd.DataFrame:
     if 'tp' in df.columns:
         output['Precipitation'] = df['tp'] * 1000.0
     
-    return output
+    return output.fillna(0)
 
 
 def calculate_relative_humidity(temp_c: pd.Series, dewpoint_c: pd.Series) -> pd.Series:

@@ -55,6 +55,10 @@ Features: step-by-step guidance, input validation, visual menus, smart defaults,
 # Download single year of data
 weather-file-builder download --lat 40.7 --lon -74.0 --years 2020 --output weather_2020.csv
 
+# Download time series (fastest method for continuous date ranges)
+weather-file-builder timeseries --lat 40.7 --lon -74.0 \
+    --start-date 2020-01-01 --end-date 2020-12-31 --output weather_2020.csv
+
 # Download multiple years and create TMY
 weather-file-builder tmy --lat 40.7 --lon -74.0 --years 2010-2020 --output tmy_nyc.csv
 
@@ -86,6 +90,24 @@ df = download_weather_data(
 )
 
 print(df.head())
+```
+
+#### Time Series Download (Fastest Method)
+
+```python
+from weather_file_builder import download_time_series
+
+# Download continuous date range (fastest method)
+df = download_time_series(
+    latitude=40.7128,
+    longitude=-74.0060,
+    start_date='2020-01-01',
+    end_date='2020-12-31'
+)
+
+# Single API call, much faster than monthly downloads
+# Note: ERA5-Land timeseries has more limited variable set
+print(f"Downloaded {len(df)} records in single request")
 ```
 
 #### Multi-Year Download for TMY
@@ -169,7 +191,9 @@ create_epw(
 
 ## Data Output Format
 
-All functions return pandas DataFrames with standardized columns:
+All functions return pandas DataFrames with standardized columns.
+
+**Note**: Timeseries data is saved in Apache Arrow Feather format (`.feather`) by default for faster I/O and better compression. TMY files remain in CSV format for broader compatibility.
 
 | Column | Unit | Description |
 |--------|------|-------------|
@@ -310,10 +334,13 @@ weather-file-builder
 
 1. **Download weather data (single year)** - Quick single-year downloads
 2. **Download weather data (multiple years)** - Multi-year data collection
-3. **Generate TMY** - Create Typical Meteorological Year files
-4. **Generate TMY with visualization** - TMY + multi-panel plot showing month selection
-5. **Help & Documentation** - Built-in comprehensive help
-6. **Exit**
+3. **Download time series (fast, continuous date range)** - Fastest method using ERA5-Land timeseries API
+4. **Generate TMY** - Create Typical Meteorological Year files (downloads data first)
+5. **Generate TMY with visualization** - TMY + multi-panel plot showing month selection (downloads data first)
+6. **Generate TMY from existing CSV** - Create TMY from previously downloaded multi-year CSV files (no download required)
+7. **Generate TMY with visualization from existing CSV** - TMY + visualization from existing CSV (no download required)
+8. **Help & Documentation** - Built-in comprehensive help
+9. **Exit**
 
 ### Key Features
 
@@ -346,8 +373,22 @@ $ weather-file-builder
 
 - **New users**: Use defaults (concurrent/4 workers, all variables)
 - **TMY generation**: Use 10+ years for best results
+- **Save time**: Use options 6 & 7 to generate TMY from previously downloaded CSV files (no re-download needed)
 - **Rate limits**: Try Conservative (2 workers) or Sequential mode with 2s delay
 - **Large downloads**: Multi-year takes 2-5 min/year; can cancel with Ctrl+C
+
+### Workflow Example: Reusing Downloaded Data
+
+```bash
+$ weather-file-builder
+# First: Download multi-year data once (option 2)
+#   → Save as "weather_2010-2020.csv"
+# 
+# Later: Generate TMY variants without re-downloading
+#   → Option 6: Create typical TMY from saved CSV
+#   → Option 7: Create extreme warm TMY with visualization from saved CSV
+#   → Much faster - no API calls needed!
+```
 
 ---
 

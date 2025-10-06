@@ -8,10 +8,13 @@ from typing import List, Dict
 TEMPERATURE = {
     '2m_temperature': 'Temperature',
     '2m_dewpoint_temperature': 'Dew Point',
+    'skin_temperature': 'Skin Temperature',
 }
 
 PRESSURE = {
     'surface_pressure': 'Pressure',
+    'mean_sea_level_pressure': 'Sea Level Pressure',
+    
 }
 
 WIND = {
@@ -21,7 +24,8 @@ WIND = {
 
 SOLAR = {
     'surface_solar_radiation_downwards': 'Solar Radiation',
-    'total_cloud_cover': 'Cloud Cover',
+    'surface_thermal_radiation_downwards': 'Thermal Radiation',
+    # 'total_cloud_cover': 'Cloud Cover',
 }
 
 PRECIPITATION = {
@@ -51,7 +55,18 @@ VARIABLE_GROUPS = {
 def get_era5_variables(variables: List[str] = None) -> List[str]:
     """
     Convert variable group names to ERA5 variable names.
-    
+    reanalysis_timeseries_variables = [
+        "2m_dewpoint_temperature",
+        "mean_sea_level_pressure",
+        "skin_temperature",
+        "surface_pressure",
+        "surface_solar_radiation_downwards",
+        "surface_thermal_radiation_downwards",
+        "2m_temperature",
+        "total_precipitation",
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind"
+    ]
     Parameters
     ----------
     variables : list of str, optional

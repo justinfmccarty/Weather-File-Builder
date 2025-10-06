@@ -1,12 +1,21 @@
 """
 Interactive CLI for weather-file-builder.
 
-Provides a menu-driven interface for easier use without memorizing command syntax.
+Provides a simplified menu-driven interface.
 """
 
 import sys
+import os
+import pandas as pd
 from typing import Optional, List
-from . import download_weather_data, download_multi_year, create_tmy, create_epw, create_tmy_plot
+from . import download_weather_data, comprehensive_timeseries_workflow
+from .utils import (
+    setup_project_directory, 
+    get_output_path,
+    read_project_config,
+    check_project_status,
+    read_project_log
+)
 
 
 def print_header():
@@ -21,11 +30,9 @@ def print_menu():
     """Print main menu."""
     print("\nMain Menu:")
     print("  1. Download weather data (single year)")
-    print("  2. Download weather data (multiple years)")
-    print("  3. Generate TMY (Typical Meteorological Year)")
-    print("  4. Generate TMY with visualization")
-    print("  5. Help & Documentation")
-    print("  6. Exit")
+    print("  2. Complete TMY workflow (timeseries → TMY → visualizations)")
+    print("  8. Help & Documentation")
+    print("  9. Exit")
     print()
 
 
@@ -51,7 +58,7 @@ def get_float(prompt: str, min_val: Optional[float] = None, max_val: Optional[fl
                 continue
             return value
         except ValueError:
-            print("Invalid number. Please try again.")
+            print("Please enter a valid number")
 
 
 def get_int(prompt: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
@@ -67,28 +74,59 @@ def get_int(prompt: str, min_val: Optional[int] = None, max_val: Optional[int] =
                 continue
             return value
         except ValueError:
-            print("Invalid integer. Please try again.")
+            print("Please enter a valid integer")
 
 
-def get_years() -> List[int]:
-    """Get year(s) from user."""
-    print("\nYear Selection:")
-    print("  1. Single year")
-    print("  2. Year range (e.g., 2010-2020)")
-    print("  3. Custom list")
+def get_project_directory() -> str:
+    """Get project directory from user."""
+    print("\nProject Directory:")
+    print("All outputs will be organized in subdirectories within this location.")
     
-    choice = get_choice("Select option (1-3): ", ['1', '2', '3'])
+    default_dir = "./weather_data_project"
+    dir_path = input(f"Enter project directory path [{default_dir}]: ").strip()
     
-    if choice == '1':
-        year = get_int("Enter year (1940-2024): ", min_val=1940, max_val=2024)
-        return [year]
-    elif choice == '2':
-        start = get_int("Enter start year (1940-2024): ", min_val=1940, max_val=2024)
-        end = get_int("Enter end year: ", min_val=start, max_val=2024)
-        return list(range(start, end + 1))
-    else:
-        years_str = input("Enter years separated by commas (e.g., 2018,2019,2020): ").strip()
-        return [int(y.strip()) for y in years_str.split(',')]
+    if not dir_path:
+        dir_path = default_dir
+    
+    # Check if project already exists
+    if os.path.exists(dir_path):
+        status = check_project_status(dir_path)
+        
+        if status['has_config']:
+            config = status['config']
+            print("\n" + "="*70)
+            print("⚠ EXISTING PROJECT FOUND")
+            print("="*70)
+            print(f"Location: {config['location']['latitude']}, {config['location']['longitude']}")
+            print(f"Date Range: {config['start_date']} to {config['end_date']}")
+            print(f"Created: {config.get('created', 'Unknown')}")
+            print(f"Workflow: {config.get('workflow_type', 'Unknown')}")
+            
+            if status['has_log']:
+                print("\nRecent log entries:")
+                log_content = read_project_log(dir_path)
+                if log_content:
+                    lines = log_content.strip().split('\n')
+                    for line in lines[-5:]:  # Show last 5 lines
+                        print(f"  {line}")
+            
+            print("\nStatus:")
+            print(f"  Timeseries data: {'✓' if status['has_timeseries'] else '✗'}")
+            print(f"  TMY data: {'✓' if status['has_tmy'] else '✗'}")
+            print(f"  Plots: {'✓' if status['has_plots'] else '✗'}")
+            print("="*70)
+            
+            choice = get_choice("\nUse this existing project? (y/n): ", ['y', 'n', 'Y', 'N'])
+            if choice.lower() != 'y':
+                print("Please choose a different directory.")
+                return get_project_directory()
+            
+            # Offer to use existing config
+            use_config = get_choice("Use existing configuration settings? (y/n): ", ['y', 'n', 'Y', 'N'])
+            if use_config.lower() == 'y':
+                return dir_path, config
+    
+    return dir_path, None
 
 
 def get_variables() -> Optional[List[str]]:
@@ -114,88 +152,68 @@ def get_variables() -> Optional[List[str]]:
     elif choice == '5':
         return ['temperature', 'wind', 'solar']
     else:
-        print("\nAvailable variable groups:")
-        print("  - temperature")
-        print("  - pressure")
-        print("  - wind")
-        print("  - solar")
-        print("  - precipitation")
-        vars_str = input("Enter variables separated by commas: ").strip()
+        print("\nAvailable variables: temperature, pressure, wind, solar, precipitation")
+        vars_str = input("Enter variables (comma-separated): ").strip()
         return [v.strip() for v in vars_str.split(',')]
 
 
-def get_concurrency_settings() -> tuple:
-    """Get concurrency settings."""
-    print("\nConcurrency Settings:")
-    print("  1. Concurrent (fast, default) - 4 workers")
-    print("  2. Concurrent aggressive - 6 workers")
-    print("  3. Concurrent conservative - 2 workers")
-    print("  4. Maximum (fastest, rate-limit risk) - 12 workers")
-    print("  5. Sequential (slow, rate-limit safe)")
-    
-    choice = get_choice("Select mode (1-4): ", ['1', '2', '3', '4'])
-    
-    if choice == '1':
-        return False, 4, 0.0
-    elif choice == '2':
-        return False, 6, 0.0
-    elif choice == '3':
-        return False, 2, 0.0
-    elif choice == '4':
-        return False, 12, 0.0
-    else:
-        delay = get_float("Enter delay between requests (seconds, 2.0 recommended): ", min_val=0.0)
-        return True, 2, delay
-
-
-def download_single_year():
+def interactive_download_single_year():
     """Interactive single year download."""
     print("\n" + "="*70)
     print("Download Single Year")
     print("="*70)
     
-    # Get location
+    # Get project directory
+    project_dir, existing_config = get_project_directory()
+    
+    # Get location (use existing config if available)
     print("\nLocation:")
-    lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
-    lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
+    if existing_config:
+        lat = existing_config['location']['latitude']
+        lon = existing_config['location']['longitude']
+        print(f"Using existing: {lat}, {lon}")
+    else:
+        lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
+        lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
     
     # Get year
-    years = get_years()
-    if len(years) != 1:
-        print("Error: Please select only one year for single year download")
-        return
-    year = years[0]
+    print("\nYear:")
+    year = get_int("Enter year (1940-2025): ", min_val=1940, max_val=2025)
     
     # Get variables
     variables = get_variables()
     
-    # Get concurrency
-    _, workers, _ = get_concurrency_settings()
+    # Get concurrency settings
+    print("\nConcurrency Settings:")
+    print("  1. Balanced (4 workers) - Recommended")
+    print("  2. Conservative (2 workers)")
+    print("  3. Aggressive (6 workers)")
     
-    # Get output
-    default_name = f"weather_{year}_{lat:.2f}_{lon:.2f}.csv"
-    output = input(f"\nOutput file [{default_name}]: ").strip()
-    if not output:
-        output = default_name
+    workers_choice = get_choice("Select mode (1-3): ", ['1', '2', '3'])
+    workers = {'1': 4, '2': 2, '3': 6}[workers_choice]
     
     # Confirm
     print("\n" + "-"*70)
     print("Summary:")
+    print(f"  Project directory: {project_dir}")
     print(f"  Location: {lat}, {lon}")
     print(f"  Year: {year}")
     print(f"  Variables: {variables or 'all'}")
     print(f"  Workers: {workers}")
-    print(f"  Output: {output}")
     print("-"*70)
     
     confirm = get_choice("\nProceed with download? (y/n): ", ['y', 'n', 'Y', 'N'])
     if confirm.lower() != 'y':
-        print("Download cancelled.")
+        print("Cancelled.")
         return
     
     # Download
     print("\nDownloading...")
     try:
+        # Setup project directory
+        project_dir = setup_project_directory(project_dir)
+        
+        # Download data
         df = download_weather_data(
             latitude=lat,
             longitude=lon,
@@ -204,277 +222,163 @@ def download_single_year():
             max_workers=workers
         )
         
-        df.to_csv(output, index=False)
-        print(f"\n✓ Success! Saved to: {output}")
-        print(f"  {len(df)} records")
-        print(f"  {len(df.columns)} columns")
+        # Save to project directory
+        output_path = get_output_path(
+            project_dir=project_dir,
+            data_type='single_year',
+            latitude=lat,
+            longitude=lon,
+            year=year,
+            variables=variables
+        )
+        
+        df.to_csv(output_path, index=False)
+        
+        print(f"\n✓ Download complete!")
+        print(f"  Saved to: {output_path}")
+        print(f"  Records: {len(df)}")
+        print(f"  Columns: {len(df.columns)}")
+        
     except Exception as e:
         print(f"\n✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
-def download_multi_year():
-    """Interactive multi-year download."""
+def interactive_comprehensive_tmy():
+    """Interactive comprehensive TMY workflow."""
     print("\n" + "="*70)
-    print("Download Multiple Years")
+    print("Complete TMY Workflow")
     print("="*70)
+    print("\nThis will download timeseries data, create a TMY, and generate")
+    print("visualization plots for all available variables.")
     
-    # Get location
+    # Get project directory
+    project_dir, existing_config = get_project_directory()
+    
+    # Get location (use existing config if available)
     print("\nLocation:")
-    lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
-    lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
+    if existing_config:
+        lat = existing_config['location']['latitude']
+        lon = existing_config['location']['longitude']
+        print(f"Using existing: {lat}, {lon}")
+    else:
+        lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
+        lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
     
-    # Get years
-    years = get_years()
-    if len(years) < 2:
-        print("Error: Please select at least 2 years for multi-year download")
+    # Get date range (use existing config if available)
+    print("\nDate Range:")
+    if existing_config:
+        start_date = existing_config['start_date']
+        end_date = existing_config['end_date']
+        print(f"Using existing: {start_date} to {end_date}")
+    else:
+        print("Note: TMY typically requires 10+ years for best results")
+        start_date = input("Enter start date (YYYY-MM-DD, e.g., 2010-01-01): ").strip()
+        end_date = input("Enter end date (YYYY-MM-DD, e.g., 2020-12-31): ").strip()
+    
+    # Validate dates
+    try:
+        from datetime import datetime
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        num_years = (end_dt.year - start_dt.year + 1)
+        
+        if num_years < 3:
+            print(f"\nWarning: Only {num_years} year(s) specified.")
+            print("TMY typically requires 10+ years for best results.")
+            confirm = get_choice("Continue anyway? (y/n): ", ['y', 'n', 'Y', 'N'])
+            if confirm.lower() != 'y':
+                print("Cancelled.")
+                return
+    except ValueError:
+        print("Invalid date format. Please use YYYY-MM-DD.")
         return
     
-    # Get variables
-    variables = get_variables()
+    # Get variables (use existing config if available)
+    if existing_config:
+        variables = existing_config['variables']
+        print(f"Using existing variables: {variables}")
+    else:
+        variables = get_variables()
     
-    # Get concurrency
-    sequential, workers, delay = get_concurrency_settings()
+    # TMY settings (use existing config if available)
+    print("\nTMY Type:")
+    if existing_config:
+        tmy_type = existing_config['tmy_type']
+        print(f"Using existing: {tmy_type}")
+    else:
+        print("  1. Typical (most representative)")
+        print("  2. Extreme warm")
+        print("  3. Extreme cold")
+        tmy_choice = get_choice("Select type (1-3): ", ['1', '2', '3'])
+        tmy_type = {'1': 'typical', '2': 'extreme_warm', '3': 'extreme_cold'}[tmy_choice]
     
-    # Get output
-    default_name = f"weather_{years[0]}-{years[-1]}_{lat:.2f}_{lon:.2f}.csv"
-    output = input(f"\nOutput file [{default_name}]: ").strip()
-    if not output:
-        output = default_name
+    # Method settings (use existing config if available)
+    print("\nStatistical Method:")
+    if existing_config:
+        method = existing_config['method']
+        print(f"Using existing: {method}")
+    else:
+        print("  1. Z-score (recommended)")
+        print("  2. Kolmogorov-Smirnov")
+        method_choice = get_choice("Select method (1-2): ", ['1', '2'])
+        method = {'1': 'zscore', '2': 'ks'}[method_choice]
     
     # Confirm
     print("\n" + "-"*70)
     print("Summary:")
+    print(f"  Project directory: {project_dir}")
     print(f"  Location: {lat}, {lon}")
-    print(f"  Years: {years[0]}-{years[-1]} ({len(years)} years)")
+    print(f"  Date range: {start_date} to {end_date} ({num_years} years)")
     print(f"  Variables: {variables or 'all'}")
-    print(f"  Mode: {'Sequential' if sequential else 'Concurrent'}")
-    print(f"  Workers: {workers}")
-    if sequential:
-        print(f"  Delay: {delay}s")
-    print(f"  Output: {output}")
-    print(f"  Estimated time: {len(years) * 2}-{len(years) * 5} minutes")
+    print(f"  TMY Type: {tmy_type}")
+    print(f"  Method: {method}")
+    print(f"  Estimated time: 3-10 minutes")
+    print("-"*70)
+    print("\nThis will create:")
+    print("  • Timeseries Feather (raw downloaded data)")
+    print("  • TMY CSV (typical year)")
+    print("  • Visualization plots for each variable")
     print("-"*70)
     
-    confirm = get_choice("\nProceed with download? (y/n): ", ['y', 'n', 'Y', 'N'])
+    confirm = get_choice("\nProceed? (y/n): ", ['y', 'n', 'Y', 'N'])
     if confirm.lower() != 'y':
-        print("Download cancelled.")
+        print("Cancelled.")
         return
     
-    # Download
-    print("\nDownloading...")
+    # Execute comprehensive workflow
+    print("\nExecuting workflow...")
     try:
-        df = download_multi_year(
+        results = comprehensive_timeseries_workflow(
             latitude=lat,
             longitude=lon,
-            years=years,
+            start_date=start_date,
+            end_date=end_date,
+            project_dir=project_dir,
             variables=variables,
-            delay_between_months=delay,
-            max_workers=workers,
-            sequential_years=sequential
+            tmy_type=tmy_type,
+            method=method
         )
         
-        df.to_csv(output, index=False)
-        print(f"\n✓ Success! Saved to: {output}")
-        print(f"  {len(df)} records")
-        print(f"  {df['Year'].nunique()} years")
-        print(f"  {len(df.columns)} columns")
-    except Exception as e:
-        print(f"\n✗ Error: {e}")
-
-
-def generate_tmy_basic():
-    """Interactive TMY generation (CSV only)."""
-    print("\n" + "="*70)
-    print("Generate TMY (Typical Meteorological Year)")
-    print("="*70)
-    
-    # Get location
-    print("\nLocation:")
-    lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
-    lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
-    
-    # Get years
-    print("\nNote: TMY typically requires 10+ years for best results")
-    years = get_years()
-    if len(years) < 3:
-        print(f"Warning: You selected only {len(years)} years. Recommend 10+.")
-        confirm = get_choice("Continue anyway? (y/n): ", ['y', 'n', 'Y', 'N'])
-        if confirm.lower() != 'y':
-            return
-    
-    # TMY settings
-    print("\nTMY Type:")
-    print("  1. Typical (most representative)")
-    print("  2. Extreme warm")
-    print("  3. Extreme cold")
-    tmy_choice = get_choice("Select type (1-3): ", ['1', '2', '3'])
-    tmy_type = {'1': 'typical', '2': 'extreme_warm', '3': 'extreme_cold'}[tmy_choice]
-    
-    print("\nStatistical Method:")
-    print("  1. Z-score (recommended)")
-    print("  2. Kolmogorov-Smirnov")
-    method_choice = get_choice("Select method (1-2): ", ['1', '2'])
-    method = {'1': 'zscore', '2': 'ks'}[method_choice]
-    
-    # Get concurrency
-    sequential, workers, delay = get_concurrency_settings()
-    
-    # Get output
-    default_name = f"tmy_{years[0]}-{years[-1]}_{lat:.2f}_{lon:.2f}.csv"
-    output = input(f"\nOutput file [{default_name}]: ").strip()
-    if not output:
-        output = default_name
-    
-    # Confirm
-    print("\n" + "-"*70)
-    print("Summary:")
-    print(f"  Location: {lat}, {lon}")
-    print(f"  Years: {years[0]}-{years[-1]} ({len(years)} years)")
-    print(f"  TMY Type: {tmy_type}")
-    print(f"  Method: {method}")
-    print(f"  Mode: {'Sequential' if sequential else 'Concurrent'}")
-    print(f"  Workers: {workers}")
-    print(f"  Output: {output}")
-    print(f"  Estimated time: {len(years) * 2}-{len(years) * 5} minutes")
-    print("-"*70)
-    
-    confirm = get_choice("\nProceed? (y/n): ", ['y', 'n', 'Y', 'N'])
-    if confirm.lower() != 'y':
-        print("Cancelled.")
-        return
-    
-    # Download and generate
-    print("\n[1/2] Downloading multi-year data...")
-    try:
-        df = download_multi_year(
-            latitude=lat,
-            longitude=lon,
-            years=years,
-            delay_between_months=delay,
-            max_workers=workers,
-            sequential_years=sequential
-        )
-        
-        print("\n[2/2] Generating TMY...")
-        tmy_data, selected_years = create_tmy(
-            df,
-            variable='Temperature',
-            file_type=tmy_type,
-            test_method=method
-        )
-        
-        tmy_data.to_csv(output, index=False)
-        print(f"\n✓ Success! TMY saved to: {output}")
-        print(f"  {len(tmy_data)} records")
+        print("\n" + "="*70)
+        print("✓ Workflow Complete!")
+        print("="*70)
+        print(f"\nTimeseries data: {results['timeseries_feather']} (feather format)")
+        print(f"TMY data: {results['tmy_csv']} (CSV format)")
+        print(f"\nGenerated {len(results['plots'])} visualization plots:")
+        for var, path in results['plots'].items():
+            print(f"  • {var}: {path}")
+        print(f"\nSelected years by month:")
+        for month, year in sorted(results['selected_years'].items()):
+            month_name = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][month-1]
+            print(f"  {month_name}: {year}")
         
     except Exception as e:
         print(f"\n✗ Error: {e}")
-
-
-def generate_tmy_with_viz():
-    """Interactive TMY generation with visualization."""
-    print("\n" + "="*70)
-    print("Generate TMY with Visualization")
-    print("="*70)
-    
-    # Get location
-    print("\nLocation:")
-    lat = get_float("Enter latitude (-90 to 90): ", min_val=-90, max_val=90)
-    lon = get_float("Enter longitude (-180 to 180): ", min_val=-180, max_val=180)
-    
-    # Get years
-    print("\nNote: TMY typically requires 10+ years for best results")
-    years = get_years()
-    if len(years) < 3:
-        print(f"Warning: You selected only {len(years)} years. Recommend 10+.")
-        confirm = get_choice("Continue anyway? (y/n): ", ['y', 'n', 'Y', 'N'])
-        if confirm.lower() != 'y':
-            return
-    
-    # TMY settings
-    print("\nTMY Type:")
-    print("  1. Typical (most representative)")
-    print("  2. Extreme warm")
-    print("  3. Extreme cold")
-    tmy_choice = get_choice("Select type (1-3): ", ['1', '2', '3'])
-    tmy_type = {'1': 'typical', '2': 'extreme_warm', '3': 'extreme_cold'}[tmy_choice]
-    
-    print("\nStatistical Method:")
-    print("  1. Z-score (recommended)")
-    print("  2. Kolmogorov-Smirnov")
-    method_choice = get_choice("Select method (1-2): ", ['1', '2'])
-    method = {'1': 'zscore', '2': 'ks'}[method_choice]
-    
-    # Get concurrency
-    sequential, workers, delay = get_concurrency_settings()
-    
-    # Get output
-    default_csv = f"tmy_{years[0]}-{years[-1]}_{lat:.2f}_{lon:.2f}.csv"
-    default_plot = f"tmy_viz_{years[0]}-{years[-1]}_{lat:.2f}_{lon:.2f}.png"
-    
-    output_csv = input(f"\nCSV output file [{default_csv}]: ").strip() or default_csv
-    output_plot = input(f"Plot output file [{default_plot}]: ").strip() or default_plot
-    
-    # Confirm
-    print("\n" + "-"*70)
-    print("Summary:")
-    print(f"  Location: {lat}, {lon}")
-    print(f"  Years: {years[0]}-{years[-1]} ({len(years)} years)")
-    print(f"  TMY Type: {tmy_type}")
-    print(f"  Method: {method}")
-    print(f"  Mode: {'Sequential' if sequential else 'Concurrent'}")
-    print(f"  Workers: {workers}")
-    print(f"  CSV Output: {output_csv}")
-    print(f"  Plot Output: {output_plot}")
-    print(f"  Estimated time: {len(years) * 2}-{len(years) * 5} minutes")
-    print("-"*70)
-    
-    confirm = get_choice("\nProceed? (y/n): ", ['y', 'n', 'Y', 'N'])
-    if confirm.lower() != 'y':
-        print("Cancelled.")
-        return
-    
-    # Download and generate
-    print("\n[1/3] Downloading multi-year data...")
-    try:
-        df = download_multi_year(
-            latitude=lat,
-            longitude=lon,
-            years=years,
-            delay_between_months=delay,
-            max_workers=workers,
-            sequential_years=sequential
-        )
-        
-        print("\n[2/3] Generating TMY...")
-        tmy_data, selected_years = create_tmy(
-            df,
-            variable='Temperature',
-            file_type=tmy_type,
-            test_method=method
-        )
-        
-        tmy_data.to_csv(output_csv, index=False)
-        print(f"✓ TMY data saved to: {output_csv}")
-        
-        print("\n[3/3] Creating visualization...")
-        fig = create_tmy_plot(
-            multi_year_data=df,
-            tmy_data=tmy_data,
-            selected_years=selected_years,
-            latitude=lat,
-            longitude=lon,
-            variable='Temperature',
-            output_path=output_plot
-        )
-        
-        print(f"\n✓ Success!")
-        print(f"  TMY CSV: {output_csv}")
-        print(f"  Visualization: {output_plot}")
-        print(f"  {len(tmy_data)} records")
-        
-    except Exception as e:
-        print(f"\n✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def show_help():
@@ -494,27 +398,67 @@ KEY CONCEPTS:
    - Hourly data from 1940 to present
    - Covers temperature, wind, solar radiation, precipitation, etc.
 
-2. TMY (Typical Meteorological Year)
+2. Single Year Download (Option 1)
+   - Downloads one year of hourly weather data
+   - Full variable set available
+   - Saved to project_dir/timeseries/
+   - Use for: Historical analysis, specific year studies
+
+3. Complete TMY Workflow (Option 2) - RECOMMENDED
+   - Downloads multi-year timeseries data (fast method)
+   - Creates Typical Meteorological Year
+   - Generates visualization plots for all variables
+   - All files automatically organized in project directory
+   - Use for: Building energy simulation, climate analysis
+
+4. TMY (Typical Meteorological Year)
    - Single year constructed from multiple years of data
    - Each month selected from the year that best represents long-term average
    - Used in building energy simulation (EnergyPlus, etc.)
+   - Requires 10+ years of data for best results
 
-3. Concurrency Settings
-   - Concurrent: Downloads multiple months in parallel (faster)
-   - Sequential: Downloads one month at a time (safer for rate limits)
-   - Workers: Number of parallel downloads (2-8 recommended)
+5. Project Directory Structure
+   All outputs are organized automatically:
+   
+   project_dir/
+   ├── timeseries/          # Downloaded raw data
+   │   └── timeseries_2010-01-01_2020-12-31_40.70_-74.00.csv
+   ├── tmy/                 # Generated TMY files
+   │   └── tmy_2010-2020_40.70_-74.00.csv
+   └── plots/               # Visualization plots
+       ├── tmy_temperature_2010-2020_40.70_-74.00.png
+       ├── tmy_wind_speed_2010-2020_40.70_-74.00.png
+       └── ...
 
-4. CDS API Setup Required
+6. File Naming Convention
+   Files are automatically named based on:
+   - Data type (timeseries, tmy)
+   - Date range or years
+   - Location (latitude, longitude)
+   - Variables (if subset selected)
+
+7. CDS API Setup Required
    - You need a Climate Data Store (CDS) account
    - API key must be in ~/.cdsapirc
    - Register at: https://cds.climate.copernicus.eu/
 
 TIPS:
 
-- For TMY: Use 10+ years of data for best results
-- Start with 4 workers (balanced), adjust if hitting rate limits
+- Use Option 2 (Complete TMY Workflow) for most use cases - it's comprehensive!
+- Start with 10+ years of data for TMY
+- Files are auto-named to avoid conflicts
+- All outputs go to your specified project directory
+- Conservative mode (2 workers) if you consistently hit rate limits
 - Temperature is the primary variable for TMY month selection
-- Sequential mode with 2s delay if you consistently hit rate limits
+
+WORKFLOW RECOMMENDATION:
+
+For building energy simulation:
+1. Choose Option 2 (Complete TMY Workflow)
+2. Enter your building's location (lat/lon)
+3. Use 10-15 years of recent data (e.g., 2010-2020)
+4. Select all variables
+5. Let it run - you'll get everything you need!
 
 For more information:
   - GitHub: https://github.com/jmccarty/weather_file_builder
@@ -536,30 +480,17 @@ def main():
     
     while True:
         print_menu()
+        choice = get_choice("Select option (1, 2, 8, or 9): ", ['1', '2', '8', '9'])
         
-        choice = get_choice("Select option (1-6): ", ['1', '2', '3', '4', '5', '6'])
-        
-        try:
-            if choice == '1':
-                download_single_year()
-            elif choice == '2':
-                download_multi_year()
-            elif choice == '3':
-                generate_tmy_basic()
-            elif choice == '4':
-                generate_tmy_with_viz()
-            elif choice == '5':
-                show_help()
-            elif choice == '6':
-                print("\nThank you for using Weather File Builder!")
-                sys.exit(0)
-        except KeyboardInterrupt:
-            print("\n\nOperation cancelled by user.")
-            continue
-        except Exception as e:
-            print(f"\n✗ Unexpected error: {e}")
-            print("Returning to main menu...")
-            continue
+        if choice == '1':
+            interactive_download_single_year()
+        elif choice == '2':
+            interactive_comprehensive_tmy()
+        elif choice == '8':
+            show_help()
+        elif choice == '9':
+            print("\nGoodbye!")
+            sys.exit(0)
 
 
 if __name__ == '__main__':

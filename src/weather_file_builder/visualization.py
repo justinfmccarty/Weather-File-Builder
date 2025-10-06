@@ -5,6 +5,7 @@ Functions for creating plots that show how TMY files were constructed
 from individual years of weather data.
 """
 
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,8 +20,8 @@ def create_tmy_plot(
     multi_year_data: pd.DataFrame,
     tmy_data: pd.DataFrame,
     selected_years: Dict[int, int],
-    latitude: float,
-    longitude: float,
+    latitude: float = None,
+    longitude: float = None,
     variable: str = 'Temperature',
     output_path: Optional[str] = None,
     figsize: Optional[tuple] = None,
@@ -30,29 +31,35 @@ def create_tmy_plot(
     Create a visualization showing how TMY was constructed from individual years.
     
     Creates a multi-panel plot with:
-    - One panel per input year showing that year's data
+    - One panel per year that was selected for at least one month
     - Highlighted months that were selected for the TMY
     - Arrows connecting selected months to final TMY
     - Bottom panel showing the final constructed TMY
     
+    Note: Only years that contributed to the TMY are shown (not all years from
+    the source data). This creates a cleaner, more focused visualization.
+    
     Parameters
     ----------
     multi_year_data : pd.DataFrame
-        Multi-year source data with 'Year', 'Month', 'Day', 'Hour', and variable columns
+        Multi-year source data with 'Year', 'Month', 'Day', 'Hour', and variable columns.
+        Only years that were selected for the TMY will be plotted.
     tmy_data : pd.DataFrame
         Constructed TMY data
     selected_years : dict
         Dictionary mapping month (1-12) to selected year
-    latitude : float
-        Location latitude for plot title
-    longitude : float
-        Location longitude for plot title
+    latitude : float, optional
+        Location latitude for plot title. If None, will attempt to extract from
+        multi_year_data['Latitude'] column.
+    longitude : float, optional
+        Location longitude for plot title. If None, will attempt to extract from
+        multi_year_data['Longitude'] column.
     variable : str, default 'Temperature'
         Variable to plot
     output_path : str, optional
         Path to save figure (if None, figure is not saved)
     figsize : tuple, optional
-        Figure size (width, height). If None, auto-calculated based on number of years
+        Figure size (width, height). If None, auto-calculated based on number of selected years
     dpi : int, default 150
         Resolution for saved figure
     
@@ -75,9 +82,33 @@ def create_tmy_plot(
     if variable not in multi_year_data.columns:
         raise ValueError(f"Variable '{variable}' not found in data")
     
-    # Get unique years and sort
-    years = sorted(multi_year_data['Year'].unique())
-    n_years = len(years)
+    # Extract latitude/longitude from dataframe if not provided
+    if latitude is None and 'Latitude' in multi_year_data.columns:
+        latitude = multi_year_data['Latitude'].iloc[0]
+        if pd.notna(latitude):
+            print(f"Using latitude from data: {latitude:.4f}")
+        else:
+            latitude = 0.0  # Fallback
+    elif latitude is None:
+        latitude = 0.0  # Fallback
+    
+    if longitude is None and 'Longitude' in multi_year_data.columns:
+        longitude = multi_year_data['Longitude'].iloc[0]
+        if pd.notna(longitude):
+            print(f"Using longitude from data: {longitude:.4f}")
+        else:
+            longitude = 0.0  # Fallback
+    elif longitude is None:
+        longitude = 0.0  # Fallback
+    
+    # Get only the years that were selected for TMY (not all years)
+    years_used = sorted(set(selected_years.values()))
+    n_years = len(years_used)
+    
+    # Filter data to only include years used in TMY
+    multi_year_data = multi_year_data[multi_year_data['Year'].isin(years_used)].copy()
+    
+    print(f"Creating TMY visualization with {n_years} selected years: {years_used}")
     
     # Auto-calculate figure size if not provided
     if figsize is None:
@@ -97,40 +128,66 @@ def create_tmy_plot(
     # Use a common plot year for x-axis alignment
     plot_year = datetime.now().year
     
+    # Remove leap days from both datasets
+    mask = (multi_year_data['Month'] == 2) & (multi_year_data['Day'] == 29)
+    multi_year_data = multi_year_data[~mask].reset_index(drop=True)
+    mask = (tmy_data['Month'] == 2) & (tmy_data['Day'] == 29)
+    tmy_data = tmy_data[~mask].reset_index(drop=True)
+
     # Prepare data with common year for plotting
     data_indexed = multi_year_data.copy()
     data_indexed['PlotYear'] = plot_year
     
     # Create datetime index for plotting
-    try:
-        data_indexed['PlotDate'] = pd.to_datetime(
-            data_indexed[['PlotYear', 'Month', 'Day', 'Hour']].rename(
-                columns={'PlotYear': 'year', 'Month': 'month', 'Day': 'day', 'Hour': 'hour'}
-            )
-        )
-    except:
-        # Fallback if Day/Hour columns don't exist
-        data_indexed['PlotDate'] = pd.to_datetime(
-            data_indexed[['PlotYear', 'Month']].assign(day=1).rename(
-                columns={'PlotYear': 'year', 'Month': 'month'}
-            )
-        )
+    # try:
+    #     data_indexed['PlotDate'] = pd.to_datetime(
+    #         data_indexed[['PlotYear', 'Month', 'Day', 'Hour']].rename(
+    #             columns={'PlotYear': 'year', 'Month': 'month', 'Day': 'day', 'Hour': 'hour'}
+    #         )
+    #     )
+    # except:
+    #     # Fallback if Day/Hour columns don't exist
+    #     data_indexed['PlotDate'] = pd.to_datetime(
+    #         data_indexed[['PlotYear', 'Month']].assign(day=1).rename(
+    #             columns={'PlotYear': 'year', 'Month': 'month'}
+    #         )
+    #     )
+    
+    data_indexed['PlotDate'] = pd.to_datetime({
+        "year": 2025,
+        "month": data_indexed["Month"],
+        "day": data_indexed["Day"],
+        "hour": data_indexed["Hour"],
+        "minute": data_indexed["Minute"],
+        "second": 0
+    })
     
     # Prepare TMY data
     tmy_indexed = tmy_data.copy()
     tmy_indexed['PlotYear'] = plot_year
-    try:
-        tmy_indexed['PlotDate'] = pd.to_datetime(
-            tmy_indexed[['PlotYear', 'Month', 'Day', 'Hour']].rename(
-                columns={'PlotYear': 'year', 'Month': 'month', 'Day': 'day', 'Hour': 'hour'}
-            )
-        )
-    except:
-        tmy_indexed['PlotDate'] = pd.to_datetime(
-            tmy_indexed[['PlotYear', 'Month']].assign(day=1).rename(
-                columns={'PlotYear': 'year', 'Month': 'month'}
-            )
-        )
+    
+    # try:
+    #     tmy_indexed['PlotDate'] = pd.to_datetime(
+    #         tmy_indexed[['PlotYear', 'Month', 'Day', 'Hour']].rename(
+    #             columns={'PlotYear': 'year', 'Month': 'month', 'Day': 'day', 'Hour': 'hour'}
+    #         )
+    #     )
+    # except:
+        # tmy_indexed['datetime'] = pd.to_datetime(
+        #     tmy_indexed[['PlotYear' ,'Month', 'Day', 'Hour', 'Minute']].assign(second=0).rename(
+        #         columns={'PlotYear': 'year', 'Month': 'month', 'Day': 'day', 'Hour': 'hour'}
+        #     )
+        # )
+    
+    tmy_indexed['PlotDate'] = pd.to_datetime({
+        "year": 2025,
+        "month": tmy_indexed["Month"],
+        "day": tmy_indexed["Day"],
+        "hour": tmy_indexed["Hour"],
+        "minute": tmy_indexed["Minute"],
+        "second": 0
+    })
+    
     
     # Line width settings
     primary_lw = 0.75
@@ -151,36 +208,36 @@ def create_tmy_plot(
         if n == n_years:
             # Last panel: Constructed TMY
             # Plot all individual years in grey
-            for year in years:
+            for year in years_used:
                 year_data = data_indexed[data_indexed['Year'] == year]
                 if not year_data.empty:
-                    # Resample to daily means for cleaner visualization
-                    annual_curve = year_data.groupby('PlotDate')[variable].mean()
-                    ax.plot(annual_curve.index, annual_curve.values, 
+                    # Plot all hourly data (no resampling)
+                    ax.plot(year_data['PlotDate'], year_data[variable], 
                            lw=sub_lw, c="grey", alpha=0.5)
             
             # Plot TMY in red
             if not tmy_indexed.empty:
-                tmy_curve = tmy_indexed.groupby('PlotDate')[variable].mean()
-                ax.plot(tmy_curve.index, tmy_curve.values, lw=primary_lw, c="red")
+                ax.plot(tmy_indexed['PlotDate'], tmy_indexed[variable], 
+                       lw=primary_lw, c="red")
         
         else:
             # Individual year panels
-            year = years[n]
+            year = years_used[n]
             
             # Plot other years in grey
-            for other_year in [y for y in years if y != year]:
+            for other_year in [y for y in years_used if y != year]:
                 other_data = data_indexed[data_indexed['Year'] == other_year]
+                
                 if not other_data.empty:
-                    other_curve = other_data.groupby('PlotDate')[variable].mean()
-                    ax.plot(other_curve.index, other_curve.values, 
+                    # Plot all hourly data (no resampling)
+                    ax.plot(other_data['PlotDate'], other_data[variable], 
                            lw=sub_lw, c="grey", alpha=0.5)
             
             # Plot current year in red
             year_data = data_indexed[data_indexed['Year'] == year]
             if not year_data.empty:
-                year_curve = year_data.groupby('PlotDate')[variable].mean()
-                ax.plot(year_curve.index, year_curve.values, lw=primary_lw, c="red")
+                ax.plot(year_data['PlotDate'], year_data[variable], 
+                       lw=primary_lw, c="red")
             
             # Highlight selected months and prepare arrows
             selected_months = [month for month, sel_year in selected_years.items() 
@@ -218,8 +275,8 @@ def create_tmy_plot(
         ax.get_xaxis().set_ticks([])
         ax.get_yaxis().set_ticks([])
         
-        # Set limits
-        ax.set_xlim([datetime(plot_year, 1, 1), datetime(plot_year, 12, 31)])
+        # Set limits (extend to Jan 1 of next year to show all of December)
+        ax.set_xlim([datetime(plot_year, 1, 1), datetime(plot_year + 1, 1, 1)])
         ax.set_ylim([ymin, ymax])
         
         # Add subplot titles
@@ -267,7 +324,7 @@ def create_tmy_plot(
             continue
     
     # Set figure title
-    fig.suptitle(f'{variable} - ({round(latitude, 2)}, {round(longitude, 2)})',
+    fig.suptitle(f'Typical {variable}: {round(latitude, 2)}, {round(longitude, 2)} - Year Range: {multi_year_data["Year"].min()}-{multi_year_data["Year"].max()}',
                 fontsize=10, x=0.018, y=0.99, ha='left', va='bottom')
     
     # Save figure if path provided
