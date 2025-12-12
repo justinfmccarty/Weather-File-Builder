@@ -85,7 +85,7 @@ def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remov
         output['Wind Speed'] = np.sqrt(df['u10']**2 + df['v10']**2)
         output['Wind Direction'] = (np.degrees(np.arctan2(df['u10'], df['v10'])) + 360) % 360
     
-    # Solar radiation (J/m² to W/m² - divide by 3600 for hourly accumulation)
+    # Solar radiation - surface solar downward (J/m² to W/m² - divide by 3600 for hourly accumulation)
     if 'ssrd' in df.columns:
         # ERA5 provides accumulated radiation, need hourly average
         output['GHI'] = df['ssrd'] / 3600.0
@@ -130,6 +130,11 @@ def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remov
             # Fallback to simplified model if required inputs are missing
             output['DNI'] = output['GHI'] * 0.7
             output['DHI'] = output['GHI'] * 0.3
+    
+    # Solar radiation - surface thermal downward (J/m² to W/m² - divide by 3600 for hourly accumulation)
+    if 'strd' in df.columns:
+        output['IR'] = df['strd'] / 3600.0
+    
     
     # Cloud cover (0-1 fraction)
     if 'tcc' in df.columns:

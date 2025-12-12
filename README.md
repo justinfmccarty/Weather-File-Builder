@@ -10,6 +10,9 @@ Build weather files (EPW, TMY) from ERA5 global reanalysis data for building ene
 - 🎨 **TMY Visualization**: Multi-panel plots showing month selection and final TMY construction
 - 🐍 **Python API**: Clean, programmatic interface for integration into other projects
 - 💻 **Dual Interface**: Interactive menu-driven mode or traditional command-line interface
+- 📝 **Configuration & Logging**: Automatic project configuration files and comprehensive logging
+- 🔁 **Resume Capability**: Interrupted workflows can be safely resumed without re-downloading data
+- 📊 **Project Status**: Check completion status of timeseries, TMY, and visualization outputs
 
 ## Installation
 
@@ -52,6 +55,12 @@ Features: step-by-step guidance, input validation, visual menus, smart defaults,
 ### Command Line Interface
 
 ```bash
+# Comprehensive workflow (downloads data, creates TMY, generates plots)
+weather-file-builder workflow \
+    --lat 40.7 --lon -74.0 \
+    --start-date 2010-01-01 --end-date 2020-12-31 \
+    --project-dir ./my_weather_project
+
 # Download single year of data
 weather-file-builder download --lat 40.7 --lon -74.0 --years 2020 --output weather_2020.csv
 
@@ -73,9 +82,60 @@ weather-file-builder download --lat 40.7 --lon -74.0 --years 2020 \
 # Use sequential mode if hitting rate limits
 weather-file-builder download --lat 40.7 --lon -74.0 --years 2018-2020 \
     --sequential --delay 2.0 --output weather.csv
+
+# Resume an interrupted workflow (automatically skips completed steps)
+weather-file-builder workflow \
+    --lat 40.7 --lon -74.0 \
+    --start-date 2010-01-01 --end-date 2020-12-31 \
+    --project-dir ./my_weather_project
+```
+
+### Configuration & Logging
+
+All workflows automatically create:
+- **`config.json`**: Stores all project parameters (location, dates, variables, etc.)
+- **`project.log`**: Timestamped log of all operations with INFO, SUCCESS, WARNING, and ERROR levels
+
+**Resume interrupted workflows**: Simply re-run the same command. The system detects existing data and skips completed steps automatically.
+
+**Check project status**:
+```python
+from weather_file_builder.utils import check_project_status
+
+status = check_project_status('./my_weather_project')
+print(f"Timeseries: {'✓' if status['has_timeseries'] else '✗'}")
+print(f"TMY: {'✓' if status['has_tmy'] else '✗'}")
+print(f"Plots: {'✓' if status['has_plots'] else '✗'}")
 ```
 
 ### Python API
+
+#### Comprehensive Workflow (Recommended)
+
+```python
+from weather_file_builder.core import comprehensive_timeseries_workflow
+
+# Complete workflow: download data, create TMY, generate visualizations
+result = comprehensive_timeseries_workflow(
+    latitude=40.7128,
+    longitude=-74.0060,
+    start_date='2010-01-01',
+    end_date='2020-12-31',
+    project_dir='./nyc_weather',
+    tmy_type='typical',
+    create_plots=True
+)
+
+# Result includes paths to all generated files
+print(f"Config: {result['config_path']}")
+print(f"Log: {result['log_path']}")
+print(f"Timeseries: {result['timeseries_path']}")
+print(f"TMY: {result['tmy_path']}")
+print(f"Plots: {result['plots']}")
+
+# Resume capability: re-run the same code to resume if interrupted
+# The workflow automatically detects and skips completed steps
+```
 
 #### Basic Download (Single Year, All Variables)
 
@@ -188,6 +248,28 @@ create_epw(
     elevation=10
 )
 ```
+
+## Project Directory Structure
+
+When using the comprehensive workflow or interactive mode with project directories, the following structure is created:
+
+```
+my_weather_project/
+├── config.json              # Project configuration (location, dates, variables)
+├── project.log              # Timestamped log of all operations
+├── timeseries/              # Downloaded weather data
+│   └── timeseries_YYYY-MM-DD_to_YYYY-MM-DD.csv
+├── tmy/                     # Generated TMY files
+│   └── tmy_YYYY-MM-DD_to_YYYY-MM-DD.csv
+└── plots/                   # Visualization outputs
+    └── tmy_visualization_*.png
+```
+
+**Benefits:**
+- **Reproducibility**: `config.json` documents exactly what was done
+- **Debugging**: `project.log` shows all operations with timestamps
+- **Resume capability**: Re-run workflows without re-downloading existing data
+- **Organization**: All project files in one place
 
 ## Data Output Format
 
@@ -312,12 +394,14 @@ See the [full API documentation](docs/api.md) for detailed information on all fu
 - [x] Standardized weather data format
 - [x] TMY construction (Sandia method with z-score/KS tests)
 - [x] TMY visualization (multi-panel plots)
+- [x] Configuration and logging system
+- [x] Resume capability for interrupted workflows
+- [x] Project status checking
 - [ ] EPW file generation
 - [ ] Data quality validation
 - [ ] Solar radiation models (DISC, Perez)
 - [ ] Psychrometric calculations
 - [ ] Progress bars for long downloads
-- [ ] Caching downloaded data
 
 ---
 
@@ -332,20 +416,23 @@ weather-file-builder
 
 ### Main Menu Options
 
-1. **Download weather data (single year)** - Quick single-year downloads
-2. **Download weather data (multiple years)** - Multi-year data collection
-3. **Download time series (fast, continuous date range)** - Fastest method using ERA5-Land timeseries API
-4. **Generate TMY** - Create Typical Meteorological Year files (downloads data first)
-5. **Generate TMY with visualization** - TMY + multi-panel plot showing month selection (downloads data first)
-6. **Generate TMY from existing CSV** - Create TMY from previously downloaded multi-year CSV files (no download required)
-7. **Generate TMY with visualization from existing CSV** - TMY + visualization from existing CSV (no download required)
-8. **Help & Documentation** - Built-in comprehensive help
-9. **Exit**
+1. **Comprehensive workflow** - Complete end-to-end workflow with project directory, configuration, and logging
+2. **Download weather data (single year)** - Quick single-year downloads
+3. **Download weather data (multiple years)** - Multi-year data collection
+4. **Download time series (fast, continuous date range)** - Fastest method using ERA5-Land timeseries API
+5. **Generate TMY** - Create Typical Meteorological Year files (downloads data first)
+6. **Generate TMY with visualization** - TMY + multi-panel plot showing month selection (downloads data first)
+7. **Generate TMY from existing CSV** - Create TMY from previously downloaded multi-year CSV files (no download required)
+8. **Generate TMY with visualization from existing CSV** - TMY + visualization from existing CSV (no download required)
+9. **Help & Documentation** - Built-in comprehensive help
+10. **Exit**
 
 ### Key Features
 
 - **Input validation**: Latitude/longitude bounds, year ranges (1940-2024), type checking
-- **Smart defaults**: Auto-generated filenames based on location/years
+- **Smart defaults**: Auto-generated filenames and project directories based on location/dates
+- **Project detection**: Automatically detects existing projects and offers to resume
+- **Configuration reuse**: Use saved configuration from previous runs
 - **Pre-configured presets**:
   - Variable groups: All, Temperature only, Temp+Wind, Temp+Solar, Temp+Wind+Solar, Custom
   - Concurrency modes: Balanced (4 workers), Aggressive (6), Conservative (2), Sequential
@@ -358,36 +445,50 @@ weather-file-builder
 
 ```bash
 $ weather-file-builder
-# 1. Select option 4 (Generate TMY with visualization)
+# 1. Select option 1 (Comprehensive workflow)
 # 2. Enter location: 40.7, -74.0
-# 3. Select year range: 2010-2020
+# 3. Enter date range: 2010-01-01 to 2020-12-31
 # 4. Choose TMY type: Typical
-# 5. Choose method: Z-score
-# 6. Choose concurrency: Concurrent (4 workers)
-# 7. Accept default filenames or customize
-# 8. Confirm and wait
-# 9. Get CSV + PNG visualization!
+# 5. Accept default project directory or customize
+# 6. Confirm and wait
+# 7. Get complete project with config, logs, data, TMY, and plots!
+
+# If interrupted, run again - it will detect the existing project
+# and offer to resume from where it left off
 ```
 
 ### Tips
 
-- **New users**: Use defaults (concurrent/4 workers, all variables)
+- **New users**: Start with option 1 (Comprehensive workflow) for best experience
+- **Use project directories**: Automatic configuration, logging, and resume capability
 - **TMY generation**: Use 10+ years for best results
-- **Save time**: Use options 6 & 7 to generate TMY from previously downloaded CSV files (no re-download needed)
+- **Save time**: Use options 7 & 8 to generate TMY from previously downloaded CSV files (no re-download needed)
+- **Resume interrupted downloads**: Simply re-run the same command - completed steps are automatically skipped
 - **Rate limits**: Try Conservative (2 workers) or Sequential mode with 2s delay
-- **Large downloads**: Multi-year takes 2-5 min/year; can cancel with Ctrl+C
+- **Large downloads**: Multi-year takes 2-5 min/year; can cancel with Ctrl+C and resume later
 
-### Workflow Example: Reusing Downloaded Data
+### Workflow Example: Resuming and Reusing Data
 
 ```bash
 $ weather-file-builder
-# First: Download multi-year data once (option 2)
+# Scenario 1: Interrupted workflow
+#   → Run comprehensive workflow (option 1)
+#   → Download interrupted by network issue
+#   → Re-run same command
+#   → System detects existing data and resumes automatically
+
+# Scenario 2: Reusing downloaded data
+#   → First run: Download multi-year data (option 3)
 #   → Save as "weather_2010-2020.csv"
-# 
-# Later: Generate TMY variants without re-downloading
-#   → Option 6: Create typical TMY from saved CSV
-#   → Option 7: Create extreme warm TMY with visualization from saved CSV
+#   → Later: Generate TMY variants without re-downloading
+#   → Options 7 & 8: Create TMY from saved CSV
 #   → Much faster - no API calls needed!
+
+# Scenario 3: Existing project detection
+#   → Enter existing project directory
+#   → System shows project status and recent log entries
+#   → Offers to use existing configuration
+#   → Automatically skips completed steps
 ```
 
 ---
@@ -415,9 +516,18 @@ weather_file_builder/
 **Download & Data** (`core.py`, `converters.py`)
 - Async/concurrent downloads with ThreadPoolExecutor (2-8 configurable workers)
 - Sequential fallback with rate limiting and retry logic (exponential backoff: 30s, 60s, 120s)
+- Comprehensive workflow with automatic configuration and logging
+- Resume capability for interrupted downloads (checks for existing data)
 - Unit conversions: K→°C, Pa→hPa, J/m²→Wh/m²
 - Derived variables: wind speed/direction from U/V components, relative humidity from temp/dewpoint
 - Solar radiation estimates from cloud cover
+
+**Configuration & Logging** (`utils.py`)
+- Automatic creation of config.json for all workflows
+- Timestamped logging to project.log (INFO, SUCCESS, WARNING, ERROR levels)
+- Project status checking (timeseries, TMY, plots, config, log)
+- Configuration read/write with JSON format
+- Resume detection for fault-tolerant workflows
 
 **TMY Construction** (`tmy.py`)
 - Sandia method with Finkelstein-Schafer statistics
@@ -436,8 +546,16 @@ weather_file_builder/
 **Interactive CLI** (`interactive.py`)
 - Menu-driven workflows with input validation
 - Pre-configured presets for common use cases
-- Smart filename generation with location/date info
+- Smart filename and project directory generation with location/date info
+- Existing project detection with status display
+- Configuration reuse from previous runs
 - Built-in help system
+
+**Command-line Interface** (`cli.py`)
+- Traditional CLI for scripting and automation
+- Project status checking and resume capability
+- Compatible with all core functionality
+- Displays configuration and log paths in results
 
 ---
 

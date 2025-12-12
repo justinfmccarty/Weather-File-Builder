@@ -48,11 +48,11 @@ def create_epw(
     # https://designbuilder.co.uk/cahelp/Content/EnergyPlusWeatherFileFormat.htm
     # 
     # Header lines (8 lines):
-    # 1. LOCATION
+    # 1. LOCATION 
     # 2. DESIGN CONDITIONS
     # 3. TYPICAL/EXTREME PERIODS
     # 4. GROUND TEMPERATURES
-    # 5. HOLIDAYS/DAYLIGHT SAVING
+    # 5. HOLIDAYS/DAYLIGHT SAVING (default = 'HOLIDAYS/DAYLIGHT SAVINGS,No,0,0,0')
     # 6. COMMENTS 1
     # 7. COMMENTS 2
     # 8. DATA PERIODS
