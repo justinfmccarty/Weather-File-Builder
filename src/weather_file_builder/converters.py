@@ -2,10 +2,9 @@
 Convert ERA5 xarray datasets to standardized pandas DataFrames.
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import xarray as xr
-from typing import Dict
 from pvlib import irradiance, solarposition
 
 
@@ -35,7 +34,6 @@ def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remov
         df = ds.to_dataframe().reset_index()
     else:
         df = ds.copy()
-    df.to_csv('/Users/jmccarty/GitHub/weather_file_builder/notebook/debug_era5_input.csv')  # Debug line to inspect input data
     df['valid_time'] = pd.to_datetime(df['valid_time'])
     
     # Extract time components

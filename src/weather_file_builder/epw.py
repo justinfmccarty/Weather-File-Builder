@@ -1,9 +1,34 @@
 """
 EnergyPlus Weather (EPW) file generation.
+
+Uses pyepwmorph's ``Epw`` class for standards-compliant EPW output.
 """
 
-import pandas as pd
+import logging
 from typing import Optional
+
+import numpy as np
+import pandas as pd
+from pyepwmorph.tools.io import EPW_COLUMN_NAMES, Epw
+from pyepwmorph.tools.utilities import ts_8760
+
+logger = logging.getLogger(__name__)
+
+# Mapping from weather_file_builder standardised column names to EPW column names.
+_WFB_TO_EPW = {
+    "Temperature": "drybulb_C",
+    "Dew Point": "dewpoint_C",
+    "Relative Humidity": "relhum_percent",
+    "Pressure": "atmos_Pa",
+    "GHI": "glohorrad_Whm2",
+    "DNI": "dirnorrad_Whm2",
+    "DHI": "difhorrad_Whm2",
+    "IR": "horirsky_Whm2",
+    "Wind Direction": "winddir_deg",
+    "Wind Speed": "windspd_ms",
+    "Cloud Cover": "totskycvr_tenths",
+    "Precipitation": "liq_precip_depth_mm",
+}
 
 
 def create_epw(
@@ -13,59 +38,134 @@ def create_epw(
     latitude: float,
     longitude: float,
     timezone: float,
-    elevation: float = 0
-) -> None:
-    """
-    Create an EPW (EnergyPlus Weather) file from weather data.
-    
+    elevation: float = 0,
+    source_type: str = "ERA5",
+    wmo_number: str = "999999",
+) -> str:
+    """Create an EPW file from a weather data DataFrame.
+
+    The input DataFrame should contain a full non-leap year of hourly
+    data (8760 rows) with the standardised column names produced by
+    :func:`weather_file_builder.converters.era5_to_dataframe`.
+
     Parameters
     ----------
     data : pandas.DataFrame
-        Weather data DataFrame with standardized columns
+        Weather data with standardised columns (Temperature, Dew Point,
+        Relative Humidity, Pressure, GHI, DNI, DHI, Wind Speed,
+        Wind Direction, etc.).  Must be exactly 8760 rows.
     output_path : str
-        Path to output EPW file
+        Path to the output ``.epw`` file.
     location_name : str
-        Location name (e.g., "New York City, NY, USA")
+        Human-readable location name (e.g. ``"New York City"``).
+        Used in the LOCATION header.
     latitude : float
-        Latitude in decimal degrees
+        Latitude in decimal degrees.
     longitude : float
-        Longitude in decimal degrees
+        Longitude in decimal degrees.
     timezone : float
-        Timezone offset from UTC (e.g., -5 for EST)
+        UTC offset (e.g. ``-5`` for EST).
     elevation : float, default 0
-        Elevation in meters above sea level
-    
-    Examples
-    --------
-    >>> create_epw(df, "weather.epw", "New York, NY", 40.7, -74.0, -5, 10)
+        Site elevation in metres above sea level.
+    source_type : str, default ``"ERA5"``
+        Data source identifier written into the LOCATION header.
+    wmo_number : str, default ``"999999"``
+        WMO station number (use ``"999999"`` for synthetic data).
+
+    Returns
+    -------
+    str
+        The *output_path* that was written.
+
+    Raises
+    ------
+    ValueError
+        If the DataFrame does not contain exactly 8760 rows.
     """
-    # TODO: Implement EPW file generation
-    # For now, save as CSV
-    print(f"EPW generation not yet implemented. Saving as CSV: {output_path}.csv")
-    data.to_csv(f"{output_path}.csv", index=False)
-    
-    # EPW format specification:
-    # https://designbuilder.co.uk/cahelp/Content/EnergyPlusWeatherFileFormat.htm
-    # 
-    # Header lines (8 lines):
-    # 1. LOCATION 
-    # 2. DESIGN CONDITIONS
-    # 3. TYPICAL/EXTREME PERIODS
-    # 4. GROUND TEMPERATURES
-    # 5. HOLIDAYS/DAYLIGHT SAVING (default = 'HOLIDAYS/DAYLIGHT SAVINGS,No,0,0,0')
-    # 6. COMMENTS 1
-    # 7. COMMENTS 2
-    # 8. DATA PERIODS
-    # 
-    # Data lines: Year,Month,Day,Hour,Minute,DataSourceandUncertaintyFlags,
-    #             DryBulbTemperature,DewPointTemperature,RelativeHumidity,
-    #             AtmosphericStationPressure,ExtraterrestrialHorizontalRadiation,
-    #             ExtraterrestrialDirectNormalRadiation,HorizontalInfraredRadiationIntensity,
-    #             GlobalHorizontalRadiation,DirectNormalRadiation,DiffuseHorizontalRadiation,
-    #             GlobalHorizontalIlluminance,DirectNormalIlluminance,DiffuseHorizontalIlluminance,
-    #             ZenithLuminance,WindDirection,WindSpeed,TotalSkyCover,OpaqueSkyCover,
-    #             Visibility,CeilingHeight,PresentWeatherObservation,PresentWeatherCodes,
-    #             PrecipitableWater,AerosolOpticalDepth,SnowDepth,DaysSinceLastSnowfall,
-    #             Albedo,LiquidPrecipitationDepth,LiquidPrecipitationQuantity
-    
-    raise NotImplementedError("EPW file generation is not yet implemented")
+    if len(data) != 8760:
+        raise ValueError(
+            f"EPW files require exactly 8760 hourly rows (got {len(data)}). "
+            "Ensure leap days have been removed."
+        )
+
+    # Determine year for the datetime index
+    year = int(data["Year"].iloc[0]) if "Year" in data.columns else 2023
+
+    # Build the 35-column EPW dataframe
+    epw_df = pd.DataFrame(0, index=ts_8760(year=year), columns=EPW_COLUMN_NAMES)
+
+    # Time columns
+    idx = epw_df.index
+    epw_df["year"] = idx.year
+    epw_df["month"] = idx.month
+    epw_df["day"] = idx.day
+    epw_df["hour"] = idx.hour + 1  # EPW uses 1-24 hour convention
+    epw_df["minute"] = 0
+    epw_df["datasource"] = "?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0?0"
+
+    # Map available weather variables
+    data_aligned = data.reset_index(drop=True)
+    for wfb_col, epw_col in _WFB_TO_EPW.items():
+        if wfb_col in data_aligned.columns:
+            values = data_aligned[wfb_col].values
+            if epw_col == "atmos_Pa":
+                # weather_file_builder stores pressure in hPa; EPW expects Pa
+                values = values * 100.0
+            if epw_col == "totskycvr_tenths":
+                # weather_file_builder stores 0-1 fraction; EPW expects 0-10 tenths
+                values = values * 10.0
+            epw_df[epw_col] = values
+
+    # Fill opaque sky cover from total sky cover if available
+    if "totskycvr_tenths" in epw_df.columns:
+        epw_df["opaqskycvr_tenths"] = epw_df["totskycvr_tenths"]
+
+    # Replace any NaN with EPW missing-value sentinel (999 for most, 0 for others)
+    epw_df = epw_df.fillna(0)
+
+    # Construct minimal EPW headers
+    # Split location_name into city / state-or-region if a comma is present
+    parts = [p.strip() for p in location_name.split(",")]
+    city = parts[0]
+    state = parts[1] if len(parts) > 1 else ""
+    country = parts[2] if len(parts) > 2 else ""
+
+    headers = {
+        "LOCATION": [
+            city, state, country, source_type, wmo_number,
+            str(latitude), str(longitude), str(timezone), str(elevation),
+        ],
+        "DESIGN CONDITIONS": ["0"],
+        "TYPICAL/EXTREME PERIODS": ["0"],
+        "GROUND TEMPERATURES": ["0"],
+        "HOLIDAYS/DAYLIGHT SAVINGS": ["No", "0", "0", "0"],
+        "COMMENTS 1": [f"Generated by weather-file-builder from {source_type} data"],
+        "COMMENTS 2": [""],
+        "DATA PERIODS": ["1", "1", "Data", "Sunday", "1/ 1", "12/31"],
+    }
+
+    location = {
+        "title": "LOCATION",
+        "site": city,
+        "province": state,
+        "country_code": country,
+        "type": source_type,
+        "usaf": wmo_number,
+        "latitude": latitude,
+        "longitude": longitude,
+        "utc_offset": timezone,
+        "elevation": elevation,
+    }
+
+    # Build the Epw object without reading from file
+    epw = object.__new__(Epw)
+    epw.fp = output_path
+    epw.headers = headers
+    epw.dataframe = epw_df
+    epw.location = location
+    epw.string = []
+
+    epw.write_to_file(output_path)
+
+    logger.info("EPW file written: %s", output_path)
+    return output_path

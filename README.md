@@ -22,7 +22,7 @@ pip install weather-file-builder
 
 From source:
 ```bash
-git clone https://github.com/jmccarty/weather_file_builder.git
+git clone https://github.com/justinfmccarty/weather_file_builder.git
 cd weather_file_builder
 pip install -e .
 ```
@@ -367,7 +367,7 @@ conda install netcdf4 h5py
 
 ```bash
 # Clone repository
-git clone https://github.com/jmccarty/weather_file_builder.git
+git clone https://github.com/justinfmccarty/weather_file_builder.git
 cd weather_file_builder
 
 # Install in development mode with dev dependencies
@@ -397,7 +397,7 @@ See the [full API documentation](docs/api.md) for detailed information on all fu
 - [x] Configuration and logging system
 - [x] Resume capability for interrupted workflows
 - [x] Project status checking
-- [ ] EPW file generation
+- [x] EPW file generation
 - [ ] Data quality validation
 - [ ] Solar radiation models (DISC, Perez)
 - [ ] Psychrometric calculations
@@ -632,7 +632,7 @@ If you use this package in your research, please cite:
   author = {McCarty, Justin},
   title = {Weather File Builder: ERA5 to EPW/TMY Converter},
   year = {2025},
-  url = {https://github.com/jmccarty/weather_file_builder}
+  url = {https://github.com/justinfmccarty/weather_file_builder}
 }
 ```
 

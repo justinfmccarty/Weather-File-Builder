@@ -1,8 +1,12 @@
-import os
 import json
-from typing import Optional, List
-from datetime import datetime, date
+import logging
+import os
+from datetime import date, datetime
+from typing import List, Optional
+
 from pvlib.location import lookup_altitude
+
+logger = logging.getLogger(__name__)
 
 era5_timeseries_col_map = {
         "d2m": "2m_dewpoint_temperature",
@@ -364,7 +368,7 @@ def read_project_config(project_dir: str) -> Optional[dict]:
             config = json.load(f)
         return config
     except Exception as e:
-        print(f"Warning: Could not read config file: {e}")
+        logger.warning("Could not read config file: %s", e)
         return None
 
 
@@ -416,7 +420,7 @@ def read_project_log(project_dir: str) -> Optional[str]:
         with open(log_path, 'r') as f:
             return f.read()
     except Exception as e:
-        print(f"Warning: Could not read log file: {e}")
+        logger.warning("Could not read log file: %s", e)
         return None
 
 
