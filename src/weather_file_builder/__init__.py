@@ -4,7 +4,7 @@ Weather File Builder
 Build weather files (EPW, TMY) from ERA5 global reanalysis data.
 """
 
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 from .core import (
     comprehensive_workflow,
