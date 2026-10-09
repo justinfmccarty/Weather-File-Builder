@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "weather-file-builder"
-version = "2.0.5"
+version = "2.1.0"
 description = "Build EPW weather files (ISO 15927-4 typical years, actual years) from ERA5 reanalysis or station data for building energy simulation"
 readme = "README.md"
 requires-python = ">=3.9"
