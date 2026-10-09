@@ -256,7 +256,7 @@ def create_tmy_plot(
 
             fig.patches.append(arrow)
         except Exception as e:
-            warnings.warn(f"Could not create arrow: {e}")
+            warnings.warn(f"Could not create arrow: {e}", stacklevel=2)
             continue
 
     fig.suptitle(

@@ -1,16 +1,16 @@
 """Test config and logging functionality."""
 
 import os
-import tempfile
 import shutil
+import tempfile
 
 from weather_file_builder.utils import (
-    write_project_config,
-    read_project_config,
-    log_message,
-    read_project_log,
     check_project_status,
+    log_message,
+    read_project_config,
+    read_project_log,
     setup_project_directory,
+    write_project_config,
 )
 
 

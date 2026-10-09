@@ -1,9 +1,10 @@
 """Basic tests for weather-file-builder."""
 
-import pytest
 import pandas as pd
-from weather_file_builder.variables import get_era5_variables, TEMPERATURE, WIND
+import pytest
+
 from weather_file_builder.converters import calculate_relative_humidity
+from weather_file_builder.variables import TEMPERATURE, WIND, get_era5_variables
 
 
 def test_get_era5_variables_all():

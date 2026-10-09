@@ -93,3 +93,19 @@ def test_create_epw_wrong_row_count():
                 longitude=0,
                 timezone=0,
             )
+
+
+def test_create_epw_writes_period_of_record(tmp_path):
+    import numpy as np
+    import pandas as pd
+    from pyepwmorph.tools.io import epw_baseline_range, read_epw_string
+
+    from weather_file_builder.epw import create_epw
+
+    data = pd.DataFrame({"Year": 2015, "Temperature": np.full(8760, 10.0), "Pressure": 950.0})
+    path = tmp_path / "x.epw"
+    create_epw(data, str(path), "Somewhere", 47.0, 8.0, 1, 500.0,
+               period_of_record=(1991, 2020), selected_years={m: 2000 + m for m in range(1, 13)})
+    lines = read_epw_string(str(path))
+    assert epw_baseline_range(lines) == (1991, 2020)
+    assert "Jan=2001; Feb=2002" in [line for line in lines if line.startswith("COMMENTS 1")][0]

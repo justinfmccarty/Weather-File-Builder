@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "weather-file-builder"
 version = "2.0.5"
-description = "Build weather files (EPW, TMY) from ERA5 reanalysis data for building energy simulation"
+description = "Build EPW weather files (ISO 15927-4 typical years, actual years) from ERA5 reanalysis or station data for building energy simulation"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -37,7 +37,7 @@ dependencies = [
     "matplotlib>=3.7.0",
     "pyarrow>=14.0.0",
     "pvlib>=0.13.0",
-    "pyepwmorph>=2.0.2",
+    "pyepwmorph>=3.2.0",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +63,11 @@ python_files = ["test_*.py"]
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+
+[tool.ruff.lint]
+# A modest rule set that the existing code passes; widen it in a dedicated clean-up.
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"

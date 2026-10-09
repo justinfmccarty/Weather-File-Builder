@@ -242,7 +242,7 @@ def comprehensive_workflow(
     project_dir: str,
     variables: Optional[List[str]] = None,
     tmy_type: str = "typical",
-    method: str = "zscore",
+    method: Optional[str] = None,
     retry_attempts: int = 3,
 ) -> Dict:
     """Complete workflow: download timeseries, create TMY, generate plots.
@@ -271,8 +271,9 @@ def comprehensive_workflow(
         Variables to download. If None, downloads all available.
     tmy_type : str, default ``'typical'``
         Type of TMY: ``'typical'``, ``'extreme_warm'``, or ``'extreme_cold'``.
-    method : str, default ``'zscore'``
-        Statistical method: ``'zscore'`` or ``'ks'``.
+    method : str, optional
+        Month selection: ``'iso'`` (ISO 15927-4, default for a typical year),
+        ``'zscore'`` (default for the extremes) or ``'ks'``.
     retry_attempts : int, default 3
         Number of retry attempts for failed downloads.
 
@@ -292,6 +293,9 @@ def comprehensive_workflow(
     """
     from . import create_tmy
     from .visualization import create_tmy_plot
+
+    if method is None:
+        method = "iso" if tmy_type == "typical" else "zscore"
 
     project_dir = setup_project_directory(project_dir)
     logger.info("Project directory: %s", project_dir)

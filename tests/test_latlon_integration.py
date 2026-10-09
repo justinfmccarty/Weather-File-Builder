@@ -1,7 +1,6 @@
 """Test lat/lon column integration in converter output."""
 
 import pandas as pd
-import numpy as np
 import xarray as xr
 
 from weather_file_builder.converters import era5_to_dataframe

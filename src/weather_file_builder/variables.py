@@ -2,7 +2,7 @@
 ERA5 variable definitions and groupings.
 """
 
-from typing import List, Dict
+from typing import Dict, List
 
 # ERA5 variable names mapped to friendly names
 TEMPERATURE = {

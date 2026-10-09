@@ -1,8 +1,8 @@
 """Test file management utilities."""
 
 import os
-import tempfile
 import shutil
+import tempfile
 
 from weather_file_builder.utils import generate_filename, get_output_path, setup_project_directory
 

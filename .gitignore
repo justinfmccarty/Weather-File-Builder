@@ -143,3 +143,7 @@ weather_*.csv
 tmy_*.csv
 era5_*.csv
 downloads/
+
+# Station input data for examples/ (large, not redistributed)
+examples/station_data/
+examples/station_result/

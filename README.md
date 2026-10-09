@@ -370,17 +370,12 @@ conda install netcdf4 h5py
 git clone https://github.com/justinfmccarty/weather_file_builder.git
 cd weather_file_builder
 
-# Install in development mode with dev dependencies
-pip install -e ".[dev]"
+# Run tests and lint (uv creates the environment from uv.lock)
+uv run --extra dev pytest
+uv run --extra dev ruff check src tests
 
-# Run tests
-pytest
-
-# Format code
-black src/ tests/
-
-# Lint code
-ruff src/ tests/
+# Release (maintainer, on main with a clean tree)
+./release.sh patch|minor|major
 ```
 
 ## API Reference
@@ -392,7 +387,7 @@ See the [full API documentation](docs/api.md) for detailed information on all fu
 - [x] ERA5 data download with rate limiting and async/concurrent support
 - [x] Interactive and command-line interfaces
 - [x] Standardized weather data format
-- [x] TMY construction (Sandia method with z-score/KS tests)
+- [x] TMY construction (ISO 15927-4 typical year; z-score/KS extreme years)
 - [x] TMY visualization (multi-panel plots)
 - [x] Configuration and logging system
 - [x] Resume capability for interrupted workflows
@@ -437,7 +432,7 @@ weather-file-builder
   - Variable groups: All, Temperature only, Temp+Wind, Temp+Solar, Temp+Wind+Solar, Custom
   - Concurrency modes: Balanced (4 workers), Aggressive (6), Conservative (2), Sequential
   - TMY types: Typical, Extreme warm, Extreme cold
-  - Statistical methods: Z-score (recommended), Kolmogorov-Smirnov
+  - Statistical methods: ISO 15927-4 (typical), Z-score or Kolmogorov-Smirnov (extremes)
 - **Error recovery**: Clear messages, returns to menu on failure
 - **Progress feedback**: Step indicators, summaries before execution, confirmation prompts
 
@@ -530,10 +525,12 @@ weather_file_builder/
 - Resume detection for fault-tolerant workflows
 
 **TMY Construction** (`tmy.py`)
-- Sandia method with Finkelstein-Schafer statistics
-- Statistical tests: Z-score (compares means/std) or Kolmogorov-Smirnov (compares distributions)
-- Quantile-based month selection from multi-year data
+- Typical year per ISO 15927-4 (`iso15927.py`): Finkelstein-Schafer on daily means, wind tiebreak, blended joins
+- Extreme years: Z-score or Kolmogorov-Smirnov on one variable
 - Supports typical, extreme_warm, and extreme_cold modes
+
+**Station data** (`amy.py`, `amy_meteoswiss.py`, `station_tmy.py`)
+- Station tables (hourly or 10-minute) to an ISO 15927-4 typical year or an actual year
 - Returns (DataFrame, dict of selected years)
 
 **Visualization** (`visualization.py`)
@@ -561,51 +558,73 @@ weather_file_builder/
 
 ## TMY Method Documentation
 
-### Algorithm Overview
+### Typical year: ISO 15927-4 (default)
 
-The package implements the Sandia National Laboratories TMY method for constructing Typical Meteorological Years:
+`create_tmy(data)` and the station builder choose one real month for each
+calendar month (`weather_file_builder/iso15927.py`):
 
-1. **Calculate long-term statistics**: For each calendar month across all years, compute quantiles (5%, 25%, 50%, 75%, 95%) and cumulative distribution functions for key weather variables
-2. **Score candidate months**: For each month in each year, calculate Finkelstein-Schafer (FS) statistics comparing the candidate month to long-term statistics
-3. **Select representative months**: Choose the month with the lowest weighted FS statistic (best match to long-term patterns)
-4. **Construct TMY**: Concatenate selected months to form a single representative year
+1. Daily means of dry-bulb temperature, global horizontal irradiance and
+   relative humidity for every candidate month.
+2. For each variable, the Finkelstein-Schafer statistic between the
+   candidate's daily means and all candidates' daily means for that calendar
+   month: `FS = sum_i |F(i) - Phi(i)|`, with `F(i) = J(i)/(n+1)` and
+   `Phi(i) = K(i)/(N+1)` (ranks within the month and within the pooled set).
+3. Rank per variable, sum the ranks; of the three lowest sums, take the month
+   whose mean wind speed is closest to the multi-year monthly mean.
+4. Stitch the months. The 8 h either side of each join (and of December to
+   January) are blended between the two source years' own records, which
+   removes the jump at midnight without flattening the night. Temperature,
+   humidity, pressure and longwave are smoothed; wind and irradiance are not.
 
-### Statistical Methods
+A candidate month with a gap longer than `max_gap_hours` (default 6) in any
+selection variable is skipped. The standard asks for at least 10 years.
 
-**Z-score test** (default, recommended):
+### Extreme years
+
+`file_type="extreme_warm"` / `"extreme_cold"` pick, for each calendar month,
+the month whose temperature distribution lies furthest above / below the
+long-term one: `test_method="zscore"` (signed difference of means over the
+pooled spread, default) or `"ks"` (one-sided Kolmogorov-Smirnov statistic).
+These are not a standard method; stitching each month's extreme gives a year
+more extreme than any real one.
+
+### Output
+
+`create_tmy()` returns `(tmy_dataframe, {month: source_year})`. Pass the
+selection window and the dictionary to `create_epw(..., period_of_record=(start,
+end), selected_years=selected)` so COMMENTS 1 reads
+`Period of Record=YYYY-YYYY; Jan=YYYY; ...`, which pyepwmorph uses to check the
+baseline period.
+
+## Station data: typical and actual years
+
+Measured station tables (hourly or 10-minute) can be turned into an ISO
+15927-4 typical year or a single actual year (AMY), for example for model
+calibration. Column names, units and the timestamp convention are in
+`weather_file_builder/amy.py`; `amy_meteoswiss.py` reads MeteoSwiss open data.
+
+```python
+import pandas as pd
+from weather_file_builder import amy, amy_meteoswiss, station_tmy
+
+table = pd.concat(amy_meteoswiss.read_meteoswiss_ogd(f) for f in files)  # UTC, hour ending
+location = dict(site="Zurich-Fluntern", country_code="CHE", latitude=47.381, longitude=8.567,
+                elevation=604.0, utc_offset=1.0)
+
+station_tmy.station_table_to_tmy_epw(table, location, (1991, 2020), "fluntern_tmy.epw",
+                                     attribution=amy_meteoswiss.ATTRIBUTION)
+amy.station_table_to_epw(table, location, 2025, "fluntern_2025.epw")
 ```
-FS = (1/n) * Σ|((x_i - μ) / σ)|
-```
-Compares sample mean and standard deviation to long-term values. Good for typical TMY generation.
 
-**Kolmogorov-Smirnov test**:
-```
-FS = max|F_candidate(x) - F_longterm(x)|
-```
-Compares full cumulative distributions. More sophisticated but typically produces similar results to z-score.
+What is derived rather than measured, and how, is written into COMMENTS 2:
+- **Direct/diffuse:** from global irradiance, using a lookup table fitted on
+  Swiss Plateau stations with sunshine duration. Outside that climate, use
+  `decomposition="dirint"`.
+- **Sky cover:** from the clear-sky index in daylight, interpolated at night.
+- **Pressure:** where not measured, the station's monthly mean, otherwise
+  the standard atmosphere.
 
-### TMY Types
-
-- **Typical**: Selects months most representative of long-term average conditions
-- **Extreme warm**: Biases selection toward warmer months for worst-case cooling analysis
-- **Extreme cold**: Biases selection toward colder months for worst-case heating analysis
-
-### Variables Considered
-
-Primary variables for month selection (in order of importance):
-1. Temperature (2m air temperature)
-2. Dew point temperature
-3. Wind speed
-4. Global horizontal irradiance (GHI)
-
-Additional variables included in output but not used for selection:
-- Pressure, relative humidity, cloud cover, precipitation, DNI, DHI
-
-### Usage Notes
-
-- **Minimum data**: 3 years required; 10+ years recommended for robust statistics
-- **Missing data**: Gaps should be <10% per month; larger gaps may affect selection quality
-- **Output tuple**: `create_tmy()` returns `(tmy_dataframe, selected_years_dict)` where dict maps month number (1-12) to source year
+See `examples/station_tmy_meteoswiss.py`.
 
 ---
 
@@ -641,7 +660,7 @@ If you use this package in your research, please cite:
 - **ERA5 Documentation**: https://confluence.ecmwf.int/display/CKB/ERA5
 - **CDS API**: https://cds.climate.copernicus.eu/
 - **EPW Format**: https://designbuilder.co.uk/cahelp/Content/EnergyPlusWeatherFileFormat.htm
-- **TMY Methods**: NREL Technical Report on TMY3
+- **TMY Methods**: ISO 15927-4:2005, Hygrothermal performance of buildings, Part 4: Hourly data for assessing the annual energy use for heating and cooling
 - **EnergyPlus**: https://energyplus.net/
 
 ## Acknowledgments

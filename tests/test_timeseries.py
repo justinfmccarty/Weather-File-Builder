@@ -1,7 +1,7 @@
 """Integration test for timeseries download (requires CDS API access)."""
 
-import pytest
 import pandas as pd
+import pytest
 
 from weather_file_builder.core import download_time_series
 

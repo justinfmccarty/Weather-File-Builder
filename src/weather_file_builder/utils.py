@@ -276,7 +276,7 @@ def write_project_config(
     tmy_type : str, optional
         TMY type (typical, extreme_warm, extreme_cold)
     method : str, optional
-        Statistical method (zscore, ks)
+        Month selection method (iso, zscore, ks)
     workflow_type : str
         Type of workflow: 'single_year', 'timeseries', 'workflow', 'tmy'
     **kwargs

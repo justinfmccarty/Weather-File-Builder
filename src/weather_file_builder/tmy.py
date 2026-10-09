@@ -1,18 +1,23 @@
 """
 Typical Meteorological Year (TMY) generation.
 
-This module provides functionality to generate TMY files by selecting
-representative months from multi-year weather datasets using statistical
-methods (Finkelstein-Schafer statistics and z-score analysis).
+Selects one month from the record for each calendar month and stitches them
+into a year. ``test_method="iso"`` (the default for a typical year) follows
+ISO 15927-4 (:mod:`weather_file_builder.iso15927`). ``"zscore"`` and ``"ks"``
+compare the distribution of a single variable and are the methods for the
+extreme warm and cold years.
 """
 
 import logging
 import warnings
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import scipy.stats as scst
+
+from . import iso15927
+from .converters import calculate_relative_humidity
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +35,9 @@ def z_score(arr1: np.ndarray, arr2: np.ndarray) -> float:
     Returns
     -------
     float
-        Z-score indicating similarity between distributions.
+        Signed z-score: positive when ``arr2`` has a higher mean than ``arr1``
+        (a warmer candidate month for temperature), negative when lower.
+        Take the absolute value to measure closeness.
     """
     top = np.mean(arr1) - np.mean(arr2)
     bttm = np.sqrt(np.std(arr1) ** 2 + np.std(arr2) ** 2)
@@ -139,6 +146,9 @@ def calc_distances(
             test_set = quantile_dict[month][year]
 
             if test == "ks":
+                # One-sided statistics grow as the candidate moves away from the
+                # long-term distribution in the requested direction: "greater"
+                # for warmer candidates, "less" for colder ones.
                 if file_type == "extreme_warm":
                     distance = scst.kstest(q_total[month], test_set, alternative="greater")[0]
                 elif file_type == "extreme_cold":
@@ -147,13 +157,22 @@ def calc_distances(
                     distance = scst.kstest(q_total[month], test_set, alternative="two-sided")[0]
             else:
                 distance = z_score(q_total[month], test_set)
+                if file_type not in ("extreme_warm", "extreme_cold"):
+                    # Typical: closeness in either direction, not the most negative.
+                    distance = abs(distance)
 
             year_distances.append(distance)
 
+        order = np.argsort(year_distances)
         if file_type == "extreme_warm":
-            best_distances[month] = years[np.argsort(year_distances)[-1]]
+            pick = order[-1]
+        elif file_type == "extreme_cold":
+            # Signed z-score: most negative is coldest. One-sided KS "less":
+            # the largest statistic is the coldest.
+            pick = order[-1] if test == "ks" else order[0]
         else:
-            best_distances[month] = years[np.argsort(year_distances)[0]]
+            pick = order[0]
+        best_distances[int(month)] = int(years[pick])
 
     return best_distances
 
@@ -182,11 +201,42 @@ def build_new_df(data: pd.DataFrame, best_distances: Dict[int, int]) -> pd.DataF
     return pd.concat(new_df, axis=0, ignore_index=True)
 
 
+#: ERA5 frame columns for the ISO 15927-4 roles.
+_ISO_ROLES = {"temp": "Temperature", "ghi": "GHI", "rh": "Relative Humidity", "wind": "Wind Speed"}
+#: ERA5 columns smoothed across month joins (RH is recomputed afterwards).
+_ISO_SMOOTH = ("Temperature", "Dew Point", "Pressure", "IR")
+
+
+def _create_tmy_iso(data: pd.DataFrame, join_hours: int = 8) -> Tuple[pd.DataFrame, Dict[int, int]]:
+    for col in ("Year", "Month", "Day", "Hour"):
+        if col not in data.columns:
+            raise ValueError(f"test_method='iso' needs a '{col}' column")
+    index = pd.to_datetime(
+        pd.DataFrame({"year": data["Year"], "month": data["Month"], "day": data["Day"], "hour": data["Hour"]})
+    )
+    hourly = data.set_index(pd.DatetimeIndex(index))
+    hourly = hourly[~((hourly.index.month == 2) & (hourly.index.day == 29))]
+    n_years = hourly.index.year.nunique()
+    if n_years < 10:
+        logger.warning("ISO 15927-4 asks for at least 10 years; the record has %d.", n_years)
+    selection = iso15927.select_typical_months(hourly, _ISO_ROLES, min_years=1)
+    for note in selection.notes:
+        logger.info(note)
+    year_rows = iso15927.assemble_typical_year(hourly, selection.months)
+    year_rows, _ = iso15927.blend_joins(year_rows, hourly, _ISO_SMOOTH, hours=join_hours)
+    if {"Temperature", "Dew Point", "Relative Humidity"} <= set(year_rows.columns):
+        year_rows["Dew Point"] = np.minimum(year_rows["Dew Point"], year_rows["Temperature"])
+        year_rows["Relative Humidity"] = calculate_relative_humidity(
+            year_rows["Temperature"], year_rows["Dew Point"]
+        )
+    return year_rows.reset_index(drop=True), {int(m): int(y) for m, y in selection.months.items()}
+
+
 def create_tmy(
     data: pd.DataFrame,
     variable: str = "Temperature",
     file_type: str = "typical",
-    test_method: str = "zscore",
+    test_method: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[int, int]]:
     """Generate a Typical Meteorological Year from multi-year data.
 
@@ -199,12 +249,15 @@ def create_tmy(
         Multi-year weather data with columns including ``'Year'``,
         ``'Month'``, and the target variable.
     variable : str, default ``'Temperature'``
-        Variable to use for month selection.
+        Variable used by ``'zscore'`` and ``'ks'``. ``'iso'`` always ranks
+        temperature, GHI and relative humidity (wind speed as tiebreak).
     file_type : str, default ``'typical'``
         Type of meteorological year:
         ``'typical'``, ``'extreme_warm'``, or ``'extreme_cold'``.
-    test_method : str, default ``'zscore'``
-        Statistical test method: ``'zscore'`` or ``'ks'``.
+    test_method : str, optional
+        ``'iso'`` (ISO 15927-4; default for ``'typical'``, needs ``Day`` and
+        ``Hour`` columns), ``'zscore'`` (default for the extremes) or ``'ks'``.
+        ISO 15927-4 defines only a typical year.
 
     Returns
     -------
@@ -232,6 +285,21 @@ def create_tmy(
         raise ValueError(
             f"Variable '{variable}' not found in data. Available: {list(data.columns)}"
         )
+
+    if test_method is None:
+        test_method = "iso" if file_type == "typical" else "zscore"
+    if test_method not in ("iso", "zscore", "ks"):
+        raise ValueError("test_method must be 'iso', 'zscore' or 'ks'")
+    if file_type not in ("typical", "extreme_warm", "extreme_cold"):
+        raise ValueError("file_type must be 'typical', 'extreme_warm' or 'extreme_cold'")
+    if test_method == "iso":
+        if file_type != "typical":
+            raise ValueError("ISO 15927-4 defines only a typical year; use 'zscore' or 'ks' for extremes")
+        logger.info("Calculating TMY per ISO 15927-4...")
+        tmy_df, distances = _create_tmy_iso(data)
+        for month, year in distances.items():
+            logger.info("  %s: %d", iso15927.MONTH_NAMES[month - 1], year)
+        return tmy_df, distances
 
     n_years = data["Year"].nunique()
     if n_years < 3:

@@ -3,31 +3,49 @@
 # Release script for weather-file-builder
 # Usage: ./release.sh [patch|minor|major]
 #
-# Prerequisites: conda (weatherfilebuilder env), git
-# The publish.yml workflow auto-publishes to PyPI when a tag is pushed.
+# Prerequisites: uv, git, a clean working tree on main.
+# Pushing the tag triggers publish.yml, which uploads to PyPI and creates the
+# GitHub Release (no separate `gh release create` step).
 
-set -e
+set -euo pipefail
 
 BUMP_TYPE=${1:-patch}
 
+case "$BUMP_TYPE" in
+    patch|minor|major) ;;
+    *)
+        echo "ERROR: Invalid bump type '$BUMP_TYPE'. Use patch, minor, or major."
+        exit 1
+        ;;
+esac
+
 echo "Checking git status..."
-if [ -n "$(git status --porcelain | grep -E '^[AMD]')" ]; then
-    echo "ERROR: Working directory has uncommitted changes."
-    git status --porcelain | grep -E '^[AMD]'
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: The working tree has uncommitted changes."
+    echo "Commit or stash them before releasing so the tag matches what you reviewed."
+    git status --short
+    exit 1
+fi
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" != "main" ]; then
+    echo "ERROR: Releases are cut from main, but you are on '$BRANCH'."
     exit 1
 fi
 
 echo "Pulling latest changes..."
-git pull origin main
+git pull --ff-only origin main
+
+echo "Running lint..."
+uv run --extra dev ruff check src tests
 
 echo "Running tests..."
-conda run -n weatherfilebuilder pytest tests/ -v || echo "WARNING: Tests failed or no tests found, continuing..."
+uv run --extra dev pytest -q
 
 # Get current version from pyproject.toml
 CURRENT_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 echo "Current version: $CURRENT_VERSION"
 
-# Calculate new version
 MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
 MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
 PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
@@ -36,31 +54,42 @@ if [ "$BUMP_TYPE" = "major" ]; then
     NEW_VERSION="$((MAJOR + 1)).0.0"
 elif [ "$BUMP_TYPE" = "minor" ]; then
     NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
-elif [ "$BUMP_TYPE" = "patch" ]; then
-    NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
 else
-    echo "ERROR: Invalid bump type '$BUMP_TYPE'. Use patch, minor, or major."
-    exit 1
+    NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
 fi
 
 echo "New version: $NEW_VERSION"
 
-# Update version in pyproject.toml and __init__.py
-sed -i '' "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
-sed -i '' "s/__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" src/weather_file_builder/__init__.py
+if ! grep -q "^## $NEW_VERSION" CHANGELOG.md; then
+    echo "ERROR: CHANGELOG.md has no '## $NEW_VERSION' section."
+    echo "Write the release notes before tagging."
+    exit 1
+fi
+
+# Update the version in pyproject.toml and __init__.py
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
+    sed -i '' "s/^__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" src/weather_file_builder/__init__.py
+else
+    sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
+    sed -i "s/^__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" src/weather_file_builder/__init__.py
+fi
+
+# Regenerate the lock file with the new version
+uv lock
+
+echo "Building package..."
+rm -rf dist/
+uv build
 
 # Commit, tag, and push
-git add pyproject.toml src/weather_file_builder/__init__.py
+git add pyproject.toml src/weather_file_builder/__init__.py uv.lock
 git commit -m "Bump version: $CURRENT_VERSION -> $NEW_VERSION"
 git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
 
-echo "Building package..."
-conda run -n weatherfilebuilder bash -c "pip install hatch -q && hatch build"
-
 echo "Pushing changes and tags..."
-git push origin main --tags
+git push origin main --follow-tags
 
 echo "Released version $NEW_VERSION"
-echo "GitHub Actions will build and publish to PyPI automatically."
-echo "Create a GitHub release (optional):"
-echo "  https://github.com/justinfmccarty/weather_file_builder/releases/new?tag=v$NEW_VERSION"
+echo "publish.yml now uploads to PyPI and creates the GitHub Release:"
+echo "  https://github.com/justinfmccarty/weather_file_builder/actions"
