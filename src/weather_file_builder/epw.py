@@ -11,6 +11,8 @@ import pandas as pd
 from pyepwmorph.tools.io import EPW_COLUMN_NAMES, Epw
 from pyepwmorph.tools.utilities import ts_8760
 
+from .amy import _solar_frame
+
 logger = logging.getLogger(__name__)
 
 # Mapping from weather_file_builder standardised column names to EPW column names.
@@ -147,6 +149,18 @@ def create_epw(
 
     # Replace any NaN with EPW missing-value sentinel (999 for most, 0 for others)
     epw_df = epw_df.fillna(0)
+
+    # Extraterrestrial radiation, at the middle of each hour-ending row as in the
+    # AMY writer. pyepwmorph reads these columns for the clearness index and as
+    # the ceiling on direct normal; left at 0 they made every radiation morph
+    # return diffuse only and no direct normal (fixed in 2.3.1).
+    solar = _solar_frame(
+        idx.tz_localize(None) if idx.tz is not None else idx,
+        {"latitude": latitude, "longitude": longitude, "utc_offset": timezone, "elevation": elevation},
+    )
+    epw_df["exthorrad_Whm2"] = solar["ext_hor"].round(0).astype(int).to_numpy()
+    # both columns are 0 while the sun is below the horizon (EPW convention)
+    epw_df["extdirrad_Whm2"] = solar["dni_extra"].where(solar["ext_hor"] > 0, 0.0).round(0).astype(int).to_numpy()
 
     # Construct minimal EPW headers
     # Split location_name into city / state-or-region if a comma is present

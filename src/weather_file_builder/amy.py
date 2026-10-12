@@ -842,7 +842,7 @@ def derive_epw_rows(
     epw["relhum_percent"] = rh.round(1)
     epw["atmos_Pa"] = pressure.round(0).astype(int)
     epw["exthorrad_Whm2"] = solar["ext_hor"].round(0).astype(int)
-    epw["extdirrad_Whm2"] = solar["dni_extra"].round(0).astype(int)
+    epw["extdirrad_Whm2"] = solar["dni_extra"].where(solar["ext_hor"] > 0, 0.0).round(0).astype(int)
     epw["horirsky_Whm2"] = (
         lw.round(0).astype(int) if lw is not None and lw.notna().all() else _MISSING["horizontal_ir"]
     )

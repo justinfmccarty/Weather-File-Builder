@@ -78,6 +78,9 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on Python 3.9-3.13.
   selection window) in COMMENTS 1, and each row's `year` is its month's
   source year.
 - EPWs have 8760 rows and no 29 February.
+- Every EPW writer fills `exthorrad_Whm2` and `extdirrad_Whm2` (middle of each
+  hour-ending row, `amy._solar_frame`). pyepwmorph's radiation morph depends
+  on them; at 0 it returns no direct normal.
 - Tests never touch the network.
 - Python 3.9 is the floor: no `X | Y` unions, no `match`.
 - MIT licence. Do not copy code from GPL/AGPL projects.

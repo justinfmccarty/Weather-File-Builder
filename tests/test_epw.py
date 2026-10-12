@@ -109,3 +109,28 @@ def test_create_epw_writes_period_of_record(tmp_path):
     lines = read_epw_string(str(path))
     assert epw_baseline_range(lines) == (1991, 2020)
     assert "Jan=2001; Feb=2002" in [line for line in lines if line.startswith("COMMENTS 1")][0]
+
+
+def test_create_epw_writes_extraterrestrial_radiation(tmp_path):
+    """Both extraterrestrial columns are filled: pyepwmorph needs them to split
+    morphed global radiation, and at 0 it returned no direct normal at all."""
+    from pyepwmorph.tools.io import Epw
+
+    path = str(tmp_path / "etr.epw")
+    create_epw(
+        data=_make_synthetic_year(2023), output_path=path, location_name="Zurich",
+        latitude=47.41, longitude=8.51, timezone=1, elevation=440,
+    )
+    df = Epw(path).dataframe
+    eth = df["exthorrad_Whm2"].to_numpy(dtype=float)
+    etn = df["extdirrad_Whm2"].to_numpy(dtype=float)
+    # both are zero at night; by day the normal value is near the solar constant
+    assert eth[0] == 0 and etn[0] == 0 and eth.max() < 1420
+    day = etn > 0
+    assert (etn[day] > 1300).all() and etn.max() < 1420
+    assert (eth[~day] == 0).all() and 4300 < day.sum() < 4500
+    # annual horizontal total at 47 N is about 2600 kWh/m2 (AMY writer: 2604)
+    assert 2500 < eth.sum() / 1000 < 2700
+    # the hour-ending 13:00 row is near solar noon in June, beyond any other hour of the day
+    june = df[(df["month"] == 6) & (df["day"] == 21)]
+    assert int(june.loc[june["exthorrad_Whm2"].idxmax(), "hour"]) == 13

@@ -4,6 +4,21 @@ All notable changes to weather-file-builder. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions before
 2.1.0 are described only by their git tags.
 
+## 2.3.1
+
+### Fixed
+- **Typical and extreme years had no extraterrestrial radiation.** `create_epw`
+  left `exthorrad_Whm2` and `extdirrad_Whm2` at 0. pyepwmorph uses them for
+  the clearness index and as the ceiling on direct normal, so every
+  radiation morph of an ERA5 typical or extreme year came out as diffuse
+  only, with direct normal 0 in every hour. Both columns are now computed at
+  the middle of each hour-ending row, as the AMY writer already did, and both
+  are 0 while the sun is below the horizon (the AMY writer now also zeroes
+  `extdirrad_Whm2` at night, as EPW files conventionally do). Global,
+  direct and diffuse values are unchanged; files built with 2.3.0 or earlier
+  simulate the same in EnergyPlus but should be rebuilt before morphing (or
+  morphed with pyepwmorph 3.5.0, which fills the columns when they are empty).
+
 ## 2.3.0
 
 ### Fixed
