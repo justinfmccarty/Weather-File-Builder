@@ -5,7 +5,7 @@ Build weather files (EPW) from ERA5 reanalysis or measured station data:
 typical years (ISO 15927-4), extreme years and actual meteorological years.
 """
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 from .amy import build_amy_dataframe, station_table_to_epw
 from .core import (
