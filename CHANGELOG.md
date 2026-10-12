@@ -4,6 +4,36 @@ All notable changes to weather-file-builder. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions before
 2.1.0 are described only by their git tags.
 
+## 2.3.0
+
+### Fixed
+- **ERA5 wind direction was reversed.** `era5_to_dataframe` computed
+  `atan2(u10, v10)`, the direction the air moves *towards*; EPW and station
+  tables need the direction it comes *from*. A westerly (u10 > 0) was written
+  as 90 instead of 270. Every ERA5 typical or extreme year built with 2.2.0
+  or earlier has wind directions off by 180 degrees; **regenerate them**.
+  Speeds and all other fields are unaffected. New helper
+  `converters.wind_direction_from_uv`.
+
+### Added
+- `core.download_station_table(latitude, longitude, start_date, end_date)`
+  and `converters.era5_to_station_table(raw)`: ERA5-Land for a point as a
+  station table in the upload contract (UTC `timestamp` marking the end of
+  each hour, `COLUMN_SPEC` names and units, `rh_pct` from temperature and dew
+  point). Missing values stay missing and 29 February is kept, unlike
+  `era5_to_dataframe`. ERA5-Land radiation and precipitation are hourly sums
+  labelled at the end of the hour (ECMWF ERA5-Land time-series user guide);
+  small negative values from the de-accumulation are set to zero. For filling
+  gaps in a measured table after the user has compared and corrected it.
+
+### Changed
+- `validate_station_table` is about 2.5x faster and uses half the memory
+  (600k 10-minute rows: 10 s to 4 s, +250 MB): it no longer computes the
+  sub-hourly clearness variability, and groups months without string
+  formatting. New `aggregate_to_hourly(..., variability=False)`.
+- The CDS call is split out as `core._retrieve_era5_land`, returning the raw
+  records; `download_time_series` behaves as before (apart from the wind fix).
+
 ## 2.2.0
 
 ### Added

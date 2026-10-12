@@ -70,6 +70,10 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on Python 3.9-3.13.
   report and COMMENTS 2.
 - A partial AMY (`empty_months="allow"`) writes EPW missing codes for whole
   months and says so in COMMENTS 2.
+- Wind direction is where the wind comes from: `wind_direction_from_uv(u, v)`
+  (a westerly is 270). ERA5 `u10`/`v10` are the air's motion.
+- `era5_to_dataframe` still fills missing values with 0 (typical-year path);
+  `era5_to_station_table` keeps them missing. Do not use the former for gap filling.
 - Every typical-year EPW states `Period of Record=<first>-<last>` (the
   selection window) in COMMENTS 1, and each row's `year` is its month's
   source year.
@@ -96,6 +100,8 @@ Station uploads (planned use, ADR-037 in the app):
   `StationValidationReport` (`ok`, `issues`, `to_dict()`, `amy_years`,
   `partial_amy_years`, `tmy_candidates`, `tmy_ready(min_years)`)
 - `station_upload.table_for_builders(table)`
+- `core.download_station_table(latitude, longitude, start_date, end_date)`
+  returning an upload-contract table (ERA5 gap filler)
 - `amy.station_table_to_epw(table, location, year, path, empty_months="allow")`
   and its report's `partial`, `empty_months`; `station_tmy.station_table_to_tmy_epw(
   table, location, period, path, min_years=5)`

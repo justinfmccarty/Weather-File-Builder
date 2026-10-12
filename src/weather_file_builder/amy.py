@@ -285,6 +285,7 @@ def aggregate_to_hourly(
     timestamp_label: str = "end",
     table_utc_offset: float = 0.0,
     max_missing_per_hour: int = 1,
+    variability: bool = True,
 ) -> Tuple[pd.DataFrame, int]:
     """Aggregate a station table to hourly rows labelled by the interval *start* in local standard time.
 
@@ -296,6 +297,8 @@ def aggregate_to_hourly(
     sub-intervals are missing (hourly input has one reading per hour, so it is
     either there or not). Means use the readings present; sums
     (``precip_mm``, ``sunshine_min``) are scaled up to the full hour.
+    ``variability=False`` skips ``ghi_kt_std`` (a solar-position pass over
+    every sub-hourly row), for callers that only need the hourly values.
     """
     if max_missing_per_hour < 0:
         raise ValueError("max_missing_per_hour must be 0 or more")
@@ -338,7 +341,7 @@ def aggregate_to_hourly(
                 # "last" (snow depth): the reading at the end of the hour, or the latest within it
                 parts[name] = t[name].ffill(limit=k - 1).where(t[name].rolling(k, min_periods=1).count() > 0)
         hourly = pd.DataFrame(parts)
-        if "ghi_Wm2" in t.columns:
+        if variability and "ghi_Wm2" in t.columns:
             hourly["ghi_kt_std"] = _subhourly_kt_std(t["ghi_Wm2"], location, step, min_periods=need)
         hourly = hourly[hourly.index.minute == 0]
 

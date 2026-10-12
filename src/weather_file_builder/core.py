@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from .converters import era5_to_dataframe
+from .converters import era5_to_dataframe, era5_to_station_table
 from .utils import (
     check_project_status,
     get_output_path,
@@ -150,19 +150,57 @@ def download_time_series(
         start_date, end_date, latitude, longitude,
     )
 
-    df = _download_time_series(
-        latitude, longitude, start_date, end_date, era5_vars, retry_attempts,
-    )
+    raw = _retrieve_era5_land(latitude, longitude, start_date, end_date, era5_vars, retry_attempts)
+    df = era5_to_dataframe(raw, latitude=latitude, longitude=longitude)
 
     logger.info("Timeseries download complete: %d records", len(df))
     return df
+
+
+#: ERA5-Land variables that map onto station-table columns.
+STATION_TABLE_VARIABLES = [
+    "2m_temperature",
+    "2m_dewpoint_temperature",
+    "surface_pressure",
+    "surface_solar_radiation_downwards",
+    "surface_thermal_radiation_downwards",
+    "total_precipitation",
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+]
+
+
+def download_station_table(
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+    retry_attempts: int = 3,
+) -> pd.DataFrame:
+    """Download ERA5-Land for a point as a station table in the upload contract.
+
+    For filling gaps in a measured station table: UTC ``timestamp`` column
+    (interval end), :data:`weather_file_builder.amy.COLUMN_SPEC` names and
+    units, missing values kept, 29 February kept. See
+    :func:`weather_file_builder.converters.era5_to_station_table`.
+    ERA5-Land is a 0.1 degree grid cell, not the station: compare it with the
+    measurements on overlapping hours and correct it before filling.
+    """
+    logger.info(
+        "Downloading ERA5-Land station table %s to %s at (%.2f, %.2f)",
+        start_date, end_date, latitude, longitude,
+    )
+    raw = _retrieve_era5_land(
+        latitude, longitude, start_date, end_date, STATION_TABLE_VARIABLES, retry_attempts,
+    )
+    return era5_to_station_table(raw)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _download_time_series(
+def _retrieve_era5_land(
     latitude: float,
     longitude: float,
     start_date: str,
@@ -170,9 +208,11 @@ def _download_time_series(
     era5_variables: List[str],
     retry_attempts: int = 3,
 ) -> pd.DataFrame:
-    """Execute the CDS API call with retry logic.
+    """Execute the CDS API call with retry logic and return the raw CSV records.
 
-    Uses ``ecmwf.datastores.Client`` (ecmwf-datastores-client package).
+    Uses ``ecmwf.datastores.Client`` (ecmwf-datastores-client package). The
+    frame has ``valid_time`` (UTC) and the CSV's short variable names
+    (``t2m``, ``ssrd``, ...).
     """
     from ecmwf.datastores import Client
 
@@ -209,9 +249,7 @@ def _download_time_series(
                 df = pd.merge(df, other_df, on="valid_time", how="outer")
 
             df["valid_time"] = pd.to_datetime(df["valid_time"])
-
-            df_renamed = era5_to_dataframe(df, latitude=latitude, longitude=longitude)
-            return df_renamed
+            return df
 
         except Exception as e:
             logger.warning(

@@ -81,7 +81,9 @@ def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remov
     # Wind (calculate speed and direction from U/V components)
     if 'u10' in df.columns and 'v10' in df.columns:
         output['Wind Speed'] = np.sqrt(df['u10']**2 + df['v10']**2)
-        output['Wind Direction'] = (np.degrees(np.arctan2(df['u10'], df['v10'])) + 360) % 360
+        # u10/v10 are the eastward/northward components of the air's motion; the
+        # meteorological direction is where the wind comes FROM, hence the minus signs.
+        output['Wind Direction'] = wind_direction_from_uv(df['u10'], df['v10'])
     
     # Solar radiation - surface solar downward (J/m² to W/m² - divide by 3600 for hourly accumulation)
     if 'ssrd' in df.columns:
@@ -143,6 +145,63 @@ def era5_to_dataframe(ds, latitude: float = None, longitude: float = None, remov
         output['Precipitation'] = df['tp'] * 1000.0
     
     return output.fillna(0)
+
+
+def wind_direction_from_uv(u, v):
+    """Meteorological wind direction (degrees, 0 = from north, 90 = from east).
+
+    ``u`` and ``v`` are the eastward and northward components of the air's
+    motion (ERA5 ``u10``/``v10``). A westerly (u > 0, v = 0) gives 270.
+    """
+    return (np.degrees(np.arctan2(-np.asarray(u, dtype=float), -np.asarray(v, dtype=float))) + 360.0) % 360.0
+
+
+#: ERA5-Land time-series CSV column -> station-table column, with the unit conversion.
+_ERA5_STATION_COLUMNS = {
+    "t2m": ("temp_C", lambda x: x - 273.15),
+    "d2m": ("dewpoint_C", lambda x: x - 273.15),
+    "sp": ("pressure_Pa", lambda x: x),
+    # de-accumulated hourly sums (J/m2, m) labelled at the end of the hour
+    "ssrd": ("ghi_Wm2", lambda x: (x / 3600.0).clip(lower=0.0)),
+    "strd": ("lw_down_Wm2", lambda x: x / 3600.0),
+    "tp": ("precip_mm", lambda x: (x * 1000.0).clip(lower=0.0)),
+}
+
+
+def era5_to_station_table(raw: pd.DataFrame) -> pd.DataFrame:
+    """ERA5-Land time-series records as a station table in the upload contract.
+
+    The result has a tz-aware UTC ``timestamp`` column and the column names and
+    units of :data:`weather_file_builder.amy.COLUMN_SPEC`, so it can fill gaps
+    in a user's station table directly. Unlike :func:`era5_to_dataframe`,
+    missing values stay missing and 29 February is kept.
+
+    Timing: the ERA5-Land time-series product de-accumulates radiation and
+    precipitation to hourly sums labelled with the end of the hour, so each
+    timestamp ends its interval, as the contract requires. Temperature,
+    humidity, pressure and wind are instantaneous values at the timestamp.
+    Small negative radiation and precipitation from the de-accumulation are
+    set to zero. Relative humidity is computed from temperature and dew point.
+    """
+    if "valid_time" not in raw.columns:
+        raise ValueError("ERA5 records need a 'valid_time' column")
+    ts = pd.to_datetime(raw["valid_time"])
+    ts = ts.dt.tz_localize("UTC") if ts.dt.tz is None else ts.dt.tz_convert("UTC")
+    out = pd.DataFrame({"timestamp": ts})
+    for src, (name, convert) in _ERA5_STATION_COLUMNS.items():
+        if src in raw.columns:
+            out[name] = convert(pd.to_numeric(raw[src], errors="coerce")).to_numpy()
+    if "temp_C" in out.columns and "dewpoint_C" in out.columns:
+        out["rh_pct"] = calculate_relative_humidity(out["temp_C"], out["dewpoint_C"]).clip(0.0, 100.0)
+    if "u10" in raw.columns and "v10" in raw.columns:
+        u = pd.to_numeric(raw["u10"], errors="coerce").to_numpy()
+        v = pd.to_numeric(raw["v10"], errors="coerce").to_numpy()
+        out["wind_speed_ms"] = np.hypot(u, v)
+        out["wind_dir_deg"] = wind_direction_from_uv(u, v)
+    out = out.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
+    order = ["timestamp", "temp_C", "dewpoint_C", "rh_pct", "pressure_Pa", "ghi_Wm2", "lw_down_Wm2",
+             "wind_speed_ms", "wind_dir_deg", "precip_mm"]
+    return out[[c for c in order if c in out.columns]]
 
 
 def calculate_relative_humidity(temp_c: pd.Series, dewpoint_c: pd.Series) -> pd.Series:

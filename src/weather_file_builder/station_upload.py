@@ -443,14 +443,16 @@ def _clock_offsets(
     # weight by the measured irradiance alone: masking by the computed sun position would cut off
     # light that a wrong clock places after sunset and hide part of the error
     w = np.where(np.isfinite(g) & (g > _CLOCK_MIN_WM2), g, 0.0)
-    frame = pd.DataFrame({"w": w, "wr": w * rel, "day": mid.normalize()}, index=mid)
+    month_key = mid.year.to_numpy() * 100 + mid.month.to_numpy()
+    day = mid.year.to_numpy() * 1000 + mid.dayofyear.to_numpy()
+    frame = pd.DataFrame({"w": w, "wr": w * rel, "month": month_key, "sunny_day": np.where(w > 0, day, -1)})
+    totals = frame.groupby("month")[["w", "wr"]].sum()
+    sunny = frame[frame["sunny_day"] >= 0].groupby("month")["sunny_day"].nunique()
     out = {}
-    for key, block in frame.groupby(mid.strftime("%Y-%m")):
-        sunny_days = block[block["w"] > 0]["day"].nunique()
-        total = block["w"].sum()
-        if sunny_days < _CLOCK_MIN_DAYS or total <= 0:
+    for key, row in totals.iterrows():
+        if sunny.get(key, 0) < _CLOCK_MIN_DAYS or row["w"] <= 0:
             continue
-        out[key] = float(block["wr"].sum() / total)
+        out[f"{key // 100}-{key % 100:02d}"] = float(row["wr"] / row["w"])
     return out
 
 
@@ -500,7 +502,9 @@ def _coverage(
             clean[col] = clean[col].clip(lower=0)
     if "rh_pct" in clean.columns:
         clean["rh_pct"] = clean["rh_pct"].clip(upper=100)
-    hourly, _ = amy.aggregate_to_hourly(clean, location, max_missing_per_hour=max_missing_per_hour)
+    hourly, _ = amy.aggregate_to_hourly(
+        clean, location, max_missing_per_hour=max_missing_per_hour, variability=False,
+    )
     hourly = hourly.drop(columns="ghi_kt_std", errors="ignore")
     hourly = amy._complete_dewpoint_from_rh(hourly)
     first, last = hourly.index.min(), hourly.index.max()
@@ -597,7 +601,8 @@ def _coverage(
     if fewest < 10:
         report.issues.append(Issue(
             "few_tmy_years", "warning",
-            f"some calendar months have only {fewest} complete candidate years; a typical year needs at least 5 "
+            f"some calendar months have only {fewest} complete candidate year{'s' if fewest != 1 else ''}; "
+            "a typical year needs at least 5 "
             "and ISO 15927-4 asks for 10", details=dict(fewest=fewest)))
 
     _irradiance_level(report, h, location)
@@ -621,7 +626,7 @@ def _irradiance_level(report: StationValidationReport, h: pd.DataFrame, location
     clear = loc.get_clearsky(mid, model="ineichen", linke_turbidity=3.0)["ghi"].to_numpy()
     high = (solar["zenith"].to_numpy() < 70) & (clear > 200)
     kc = pd.Series(ghi.to_numpy()[high] / clear[high], index=ghi.index[high])
-    groups = kc.groupby(kc.index.strftime("%Y-%m"))
+    groups = kc.groupby([f"{y}-{m:02d}" for y, m in zip(kc.index.year, kc.index.month)])
     p90 = groups.quantile(0.9)[groups.size() >= 30]
     low = {k: round(float(v), 2) for k, v in p90.items() if v < 0.5}
     high_months = {k: round(float(v), 2) for k, v in p90.items() if v > 1.3}
