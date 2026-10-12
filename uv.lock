@@ -8991,7 +8991,7 @@ wheels = [
 
 [[package]]
 name = "weather-file-builder"
-version = "2.2.0"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "ecmwf-datastores-client", version = "0.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
