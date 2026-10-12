@@ -134,10 +134,9 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-# Project specific
+# Project specific (workflow outputs; fixtures under tests/data/ are tracked)
 *.nc
-*.epw
-*.csv
+examples/**/*.epw
 data_*/
 weather_*.csv
 tmy_*.csv

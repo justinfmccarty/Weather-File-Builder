@@ -626,6 +626,29 @@ What is derived rather than measured, and how, is written into COMMENTS 2:
 
 See `examples/station_tmy_meteoswiss.py`.
 
+### Validating user uploads
+
+`station_upload.validate_station_table` checks a table against the strict
+contract used by the Boundary Conditions app: a tz-aware UTC `timestamp`
+column (interval end), contract column names and units, 10/15/30/60-minute
+spacing, physical ranges and a solar clock check. It reports problems and
+says which years can be built; it never fixes anything.
+
+```python
+from weather_file_builder import amy, station_upload
+
+table, issues = station_upload.read_station_parquet("upload.parquet")
+report = station_upload.validate_station_table(table, 47.41, 8.51, utc_offset=1.0, elevation=530)
+print(report.to_text())
+if report.ok and 2025 in report.amy_years:
+    amy.station_table_to_epw(station_upload.table_for_builders(table), location, 2025,
+                             "amy_2025.epw", empty_months="allow")
+```
+
+A month in which a required variable is entirely empty is written with EPW
+missing codes (a *partial* AMY, flagged in COMMENTS 2); EnergyPlus will run on
+such a file without complaint, so treat it with care.
+
 ---
 
 ## Contributing

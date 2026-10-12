@@ -44,8 +44,9 @@ no daylight saving, taken from ``location["utc_offset"]``. Whole-hour
 differences between the two clocks are handled; fractional shifts are not.
 Data finer than an hour (1, 5, 10, 15 or 30 minutes) is aggregated to hours:
 means for intensive quantities, sums for ``precip_mm`` and ``sunshine_min``, a
-speed-weighted vector mean for wind direction. An hour with any sub-interval
-missing is treated as missing.
+speed-weighted vector mean for wind direction. An hour counts when at most
+``max_missing_per_hour`` sub-intervals (default 1) are missing; sums over an
+incomplete hour are scaled up to the full hour.
 
 What is derived
 ---------------
@@ -66,7 +67,12 @@ the daylight estimate) at other times. Opaque sky cover equals total sky cover.
 Fields that no station measures are written with the EPW missing codes.
 
 Short gaps are interpolated and long gaps raise an error (see
-``max_gap_hours`` and ``long_gap``). 29 February is dropped, as in every EPW.
+``max_gap_hours`` and ``long_gap``). Hours of the year that fall outside the
+record because of the time-zone shift (for example the first hour of January
+in local time when the table starts at midnight UTC) are copied from the
+adjacent day. With ``empty_months="allow"`` a required variable may be entirely
+empty in a month; those months are written with the EPW missing codes and the
+file is a *partial* AMY. 29 February is dropped, as in every EPW.
 """
 
 import datetime as _dt
@@ -110,6 +116,22 @@ COLUMN_SPEC: Dict[str, Dict[str, object]] = {
 _LINEAR_COLUMNS = ("temp_C", "dewpoint_C", "rh_pct", "pressure_Pa", "wind_speed_ms", "lw_down_Wm2", "snow_depth_cm")
 #: Columns that must have no long gap.
 _REQUIRED_FOR_GAPS = ("temp_C", "dewpoint_C", "rh_pct", "ghi_Wm2", "wind_speed_ms", "wind_dir_deg")
+#: Variables that may be empty for whole months in a partial AMY ("humidity" is
+#: ``rh_pct`` and ``dewpoint_C`` together), with the input columns each covers.
+EMPTY_MONTH_VARIABLES: Dict[str, Tuple[str, ...]] = {
+    "temp_C": ("temp_C",),
+    "humidity": ("rh_pct", "dewpoint_C"),
+    "ghi_Wm2": ("ghi_Wm2",),
+    "wind_speed_ms": ("wind_speed_ms",),
+    "wind_dir_deg": ("wind_dir_deg",),
+}
+EMPTY_VARIABLE_LABELS = {
+    "temp_C": "temperature", "humidity": "humidity", "ghi_Wm2": "global irradiance",
+    "wind_speed_ms": "wind speed", "wind_dir_deg": "wind direction",
+}
+#: Placeholder values for empty months while derived fields are computed; the
+#: affected EPW fields are then overwritten with missing codes.
+_EMPTY_PLACEHOLDER = dict(temp_C=10.0, rh_pct=70.0, dewpoint_C=5.0, ghi_Wm2=0.0, wind_speed_ms=0.0, wind_dir_deg=0.0)
 
 #: Largest zenith angle (degrees) at which irradiance is decomposed.
 _MAX_DECOMPOSE_ZENITH = 85.0
@@ -123,6 +145,7 @@ _MISSING = dict(
     illuminance=999999, zenith_luminance=9999, visibility=9999.0, ceiling=99999, weather_obs=9,
     weather_codes=999999999, precipitable_water=999, aerosol=0.999, snow_depth=999, days_since_snow=99,
     albedo=999, precip_depth=999, precip_rate=99, horizontal_ir=9999, sky_cover=99,
+    drybulb=99.9, dewpoint=99.9, relhum=999, pressure=999999, radiation=9999, wind_dir=999, wind_speed=999,
 )
 
 #: Data source and uncertainty flags written to every row.
@@ -151,6 +174,15 @@ class AmyReport:
     sky_cover_method: str = ""
     sky_cover_calibration: Dict[str, float] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    #: Variable -> calendar months written with EPW missing codes (partial AMY).
+    empty_months: Dict[str, List[int]] = field(default_factory=dict)
+    #: Hours outside the record at the year's edges, copied from the adjacent day.
+    edge_filled_hours: int = 0
+
+    @property
+    def partial(self) -> bool:
+        """True when some months are written with EPW missing codes."""
+        return any(self.empty_months.values())
 
     def to_text(self) -> str:
         lines = [f"AMY {self.year}: source resolution {self.source_step_minutes} min"]
@@ -160,8 +192,22 @@ class AmyReport:
             lines.append("diffuse/direct split (hours): " + ", ".join(f"{k}={v}" for k, v in self.decomposition.items()))
         if self.sky_cover_method:
             lines.append(f"sky cover: {self.sky_cover_method}")
+        if self.partial:
+            lines.append("PARTIAL: " + empty_months_text(self.empty_months))
         lines.extend(self.notes)
         return "\n".join(lines)
+
+
+_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def empty_months_text(empty_months: Dict[str, List[int]]) -> str:
+    """``"temperature Mar, Apr; global irradiance Jul"`` style summary."""
+    parts = []
+    for name, months in empty_months.items():
+        if months:
+            parts.append(f"{EMPTY_VARIABLE_LABELS.get(name, name)} " + ", ".join(_MONTH_ABBR[m - 1] for m in months))
+    return "months written with EPW missing codes: " + "; ".join(parts)
 
 
 # --------------------------------------------------------------------------- input handling
@@ -200,32 +246,36 @@ def _infer_step_minutes(index: pd.DatetimeIndex) -> int:
     return step
 
 
-def _vector_mean_direction(speed: Optional[pd.Series], direction: pd.Series, k: int) -> pd.Series:
+def _vector_mean_direction(
+    speed: Optional[pd.Series], direction: pd.Series, k: int, min_periods: Optional[int] = None
+) -> pd.Series:
     """Speed-weighted vector mean of a wind direction over *k* sub-intervals."""
+    min_periods = k if min_periods is None else min_periods
     rad = np.radians(direction)
     weight = speed if speed is not None else pd.Series(1.0, index=direction.index)
     calm = weight == 0
     u = (weight * np.sin(rad)).where(~calm, 0.0).where(direction.notna() | calm)
     v = (weight * np.cos(rad)).where(~calm, 0.0).where(direction.notna() | calm)
-    mu = u.rolling(k, min_periods=k).mean()
-    mv = v.rolling(k, min_periods=k).mean()
+    mu = u.rolling(k, min_periods=min_periods).mean()
+    mv = v.rolling(k, min_periods=min_periods).mean()
     out = np.degrees(np.arctan2(mu, mv)) % 360.0
     out = out.where(np.hypot(mu, mv) > 1e-9, 0.0)
     return out.where(mu.notna() & mv.notna())
 
 
-def _subhourly_kt_std(ghi: pd.Series, location: dict, step: int) -> pd.Series:
+def _subhourly_kt_std(ghi: pd.Series, location: dict, step: int, min_periods: Optional[int] = None) -> pd.Series:
     """Standard deviation of the clearness index across the sub-intervals of each hour.
 
     *ghi* is indexed by the interval end in local standard time. The result is
-    indexed the same way and is NaN where any sub-interval is missing or the
-    sun is low (zenith 85 degrees or more).
+    indexed the same way and is NaN where more than ``k - min_periods``
+    sub-intervals are missing or the sun is low (zenith 85 degrees or more).
     """
     k = 60 // step
+    min_periods = k if min_periods is None else max(2, min_periods)
     solar = _solar_frame(ghi.index - pd.Timedelta(minutes=step), location, interval_min=step)
     kt = (ghi.clip(lower=0).to_numpy() / (solar["dni_extra"].to_numpy() * solar["cosz"].to_numpy()))
     kt = pd.Series(kt, index=ghi.index).where(solar["zenith"].to_numpy() < _MAX_DECOMPOSE_ZENITH)
-    return kt.rolling(k, min_periods=k).std()
+    return kt.rolling(k, min_periods=min_periods).std()
 
 
 def aggregate_to_hourly(
@@ -234,13 +284,21 @@ def aggregate_to_hourly(
     *,
     timestamp_label: str = "end",
     table_utc_offset: float = 0.0,
+    max_missing_per_hour: int = 1,
 ) -> Tuple[pd.DataFrame, int]:
     """Aggregate a station table to hourly rows labelled by the interval *start* in local standard time.
 
     Returns the hourly frame and the source time step in minutes. A column
     ``ghi_kt_std`` (sub-hourly clearness variability) is added when the source
     is finer than an hour and has global irradiance.
+
+    An hour is kept when no more than ``max_missing_per_hour`` of its
+    sub-intervals are missing (hourly input has one reading per hour, so it is
+    either there or not). Means use the readings present; sums
+    (``precip_mm``, ``sunshine_min``) are scaled up to the full hour.
     """
+    if max_missing_per_hour < 0:
+        raise ValueError("max_missing_per_hour must be 0 or more")
     if timestamp_label not in ("end", "start"):
         raise ValueError("timestamp_label must be 'end' or 'start'")
     t = _validate_table(table)
@@ -260,6 +318,7 @@ def aggregate_to_hourly(
     if t.index[0].minute != 0 and step == 60:
         raise ValueError("hourly timestamps must fall on the hour")
     k = 60 // step
+    need = max(1, k - int(max_missing_per_hour))
 
     if k == 1:
         hourly = t.copy()
@@ -269,16 +328,18 @@ def aggregate_to_hourly(
         for name in t.columns:
             how = COLUMN_SPEC[name]["agg"]
             if how == "mean":
-                parts[name] = t[name].rolling(k, min_periods=k).mean()
+                parts[name] = t[name].rolling(k, min_periods=need).mean()
             elif how == "sum":
-                parts[name] = t[name].rolling(k, min_periods=k).sum()
+                # mean of the readings present times k: an incomplete hour is scaled to the full hour
+                parts[name] = t[name].rolling(k, min_periods=need).mean() * k
             elif how == "vector":
-                parts[name] = _vector_mean_direction(speed, t[name], k)
+                parts[name] = _vector_mean_direction(speed, t[name], k, min_periods=need)
             else:
-                parts[name] = t[name]
+                # "last" (snow depth): the reading at the end of the hour, or the latest within it
+                parts[name] = t[name].ffill(limit=k - 1).where(t[name].rolling(k, min_periods=1).count() > 0)
         hourly = pd.DataFrame(parts)
         if "ghi_Wm2" in t.columns:
-            hourly["ghi_kt_std"] = _subhourly_kt_std(t["ghi_Wm2"], location, step)
+            hourly["ghi_kt_std"] = _subhourly_kt_std(t["ghi_Wm2"], location, step, min_periods=need)
         hourly = hourly[hourly.index.minute == 0]
 
     hourly.index = hourly.index - pd.Timedelta(hours=1)
@@ -535,8 +596,18 @@ def _runs(mask: pd.Series) -> List[Tuple[pd.Timestamp, int]]:
 
 
 def _fill_gaps(
-    hourly: pd.DataFrame, solar: pd.DataFrame, max_gap_hours: int, long_gap: str, report: AmyReport
+    hourly: pd.DataFrame,
+    solar: pd.DataFrame,
+    max_gap_hours: int,
+    long_gap: str,
+    report: AmyReport,
+    exclude: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
+    """Interpolate gaps up to *max_gap_hours*; longer gaps raise (or are interpolated).
+
+    *exclude* (same index, boolean columns) marks hours that do not count as
+    gaps, such as months a partial AMY leaves empty.
+    """
     if long_gap not in ("raise", "interpolate"):
         raise ValueError("long_gap must be 'raise' or 'interpolate'")
     h = hourly.copy()
@@ -545,7 +616,10 @@ def _fill_gaps(
     problems = []
     for name in _REQUIRED_FOR_GAPS:
         if name in h.columns:
-            for start, length in _runs(h[name].isna()):
+            missing = h[name].isna()
+            if exclude is not None and name in exclude.columns:
+                missing = missing & ~exclude[name]
+            for start, length in _runs(missing):
                 if length > max_gap_hours:
                     problems.append(f"{name}: {length} h from {start:%Y-%m-%d %H:%M}")
     if problems and long_gap == "raise":
@@ -670,6 +744,7 @@ def derive_epw_rows(
     sky_cover_night: str = "auto",
     pressure_monthly_mean: Optional[Dict[int, float]] = None,
     report: Optional[AmyReport] = None,
+    empty: Optional[Dict[str, np.ndarray]] = None,
 ) -> Tuple[pd.DataFrame, AmyReport]:
     """Turn 8760 gap-filled hourly station rows into the 35 EPW columns.
 
@@ -689,6 +764,10 @@ def derive_epw_rows(
     pressure_monthly_mean : dict, optional
         Month -> mean station pressure (Pa) for hours without pressure; see
         :func:`pressure_climatology`.
+    empty : dict, optional
+        Variable (a key of :data:`EMPTY_MONTH_VARIABLES`) -> boolean mask of
+        rows whose input was empty. Those rows must hold placeholder values;
+        the EPW fields that depend on them are written with missing codes.
     """
     if sky_cover_night not in ("auto", "interpolate"):
         raise ValueError("sky_cover_night must be 'auto' or 'interpolate'")
@@ -720,13 +799,16 @@ def derive_epw_rows(
     ghi = hourly["ghi_Wm2"].clip(lower=0)
     dhi, dni = _decompose(ghi, hourly, solar, pressure, step, decomposition, report)
 
+    empty = {k: np.asarray(v, dtype=bool) for k, v in (empty or {}).items() if np.any(v)}
     lw = hourly["lw_down_Wm2"] if "lw_down_Wm2" in hourly.columns else None
     if "total_sky_cover_tenths" in hourly.columns and hourly["total_sky_cover_tenths"].notna().any():
         cover = (hourly["total_sky_cover_tenths"] / 10.0).clip(0, 1)
         report.sky_cover_method = "observed"
     else:
         lw_for_sky = lw if sky_cover_night == "auto" else None
-        cover = estimate_sky_cover(ghi, solar, temp, dew, lw_for_sky, location, report)
+        # placeholder irradiance must not reach the night interpolation of neighbouring months
+        ghi_for_sky = ghi.where(~empty["ghi_Wm2"]) if "ghi_Wm2" in empty else ghi
+        cover = estimate_sky_cover(ghi_for_sky, solar, temp, dew, lw_for_sky, location, report)
     tenths = np.rint(cover * 10.0)
     total = tenths.where(tenths.notna(), _MISSING["sky_cover"]).astype(int)
     if "opaque_sky_cover_tenths" in hourly.columns and hourly["opaque_sky_cover_tenths"].notna().all():
@@ -796,8 +878,30 @@ def derive_epw_rows(
     else:
         epw["liq_precip_depth_mm"] = _MISSING["precip_depth"]
         epw["liq_precip_rate_Hour"] = _MISSING["precip_rate"]
+    _apply_missing_codes(epw, empty)
     assert len(epw) == n == 8760
     return epw, report
+
+
+#: EPW fields that become missing when an input variable is empty.
+_EMPTY_FIELDS = {
+    "temp_C": dict(drybulb_C="drybulb", dewpoint_C="dewpoint"),
+    "humidity": dict(dewpoint_C="dewpoint", relhum_percent="relhum"),
+    "ghi_Wm2": dict(glohorrad_Whm2="radiation", dirnorrad_Whm2="radiation", difhorrad_Whm2="radiation",
+                    totskycvr_tenths="sky_cover", opaqskycvr_tenths="sky_cover"),
+    "wind_speed_ms": dict(windspd_ms="wind_speed", winddir_deg="wind_dir"),
+    "wind_dir_deg": dict(winddir_deg="wind_dir"),
+}
+
+
+def _apply_missing_codes(epw: pd.DataFrame, empty: Dict[str, np.ndarray]) -> None:
+    for variable, mask in empty.items():
+        if not mask.any():
+            continue
+        for column, code in _EMPTY_FIELDS[variable].items():
+            values = epw[column].to_numpy(dtype=object).copy()
+            values[mask] = _MISSING[code]
+            epw[column] = values
 
 
 def build_amy_dataframe(
@@ -811,6 +915,8 @@ def build_amy_dataframe(
     long_gap: str = "raise",
     decomposition: str = "auto",
     sky_cover_night: str = "auto",
+    max_missing_per_hour: int = 1,
+    empty_months: str = "raise",
 ) -> Tuple[pd.DataFrame, AmyReport]:
     """Build the 8760 EPW data rows for *year* from a station table.
 
@@ -838,6 +944,18 @@ def build_amy_dataframe(
         How to split global irradiance when no components are measured.
     sky_cover_night : {"auto", "interpolate"}
         See :func:`derive_epw_rows`.
+    max_missing_per_hour : int
+        See :func:`aggregate_to_hourly`.
+    empty_months : {"raise", "allow"}
+        ``"allow"`` accepts a required variable that is entirely empty in a
+        calendar month (each variable on its own). Those months are written
+        with the EPW missing codes and listed in ``report.empty_months``. A
+        month with some values and a gap longer than *max_gap_hours* still
+        raises.
+
+    Hours of *year* before the table's first or after its last hour (the
+    time-zone shift leaves up to ``|utc_offset|`` of them) are copied from the
+    adjacent day when there are no more than ``max_gap_hours + ceil(|utc_offset|)``.
 
     Returns
     -------
@@ -845,8 +963,13 @@ def build_amy_dataframe(
         A data frame with the 35 EPW columns (``hour`` runs 1-24) and an :class:`AmyReport`.
     """
     _check_location(location)
+    if empty_months not in ("raise", "allow"):
+        raise ValueError("empty_months must be 'raise' or 'allow'")
     report = AmyReport(year=int(year))
-    hourly_all, step = aggregate_to_hourly(table, location, timestamp_label=timestamp_label, table_utc_offset=table_utc_offset)
+    hourly_all, step = aggregate_to_hourly(
+        table, location, timestamp_label=timestamp_label, table_utc_offset=table_utc_offset,
+        max_missing_per_hour=max_missing_per_hour,
+    )
     report.source_step_minutes = step
     climatology = pressure_climatology(hourly_all)
 
@@ -855,6 +978,7 @@ def build_amy_dataframe(
     if len(present) < 0.5 * len(full):
         raise ValueError(f"the table covers only {len(present)} of the {len(full)} hours of {year}")
     hourly = hourly_all.reindex(full)
+    hourly = _fill_edges(hourly, hourly_all.index.min(), hourly_all.index.max(), location, max_gap_hours, report)
     leap_day = (full.month == 2) & (full.day == 29)
     if leap_day.any():
         hourly = hourly[~leap_day]
@@ -862,21 +986,123 @@ def build_amy_dataframe(
     # a column the station did not report at all this year is absent, not a gap
     hourly = hourly.loc[:, hourly.notna().any()]
     hourly = _complete_dewpoint_from_rh(hourly)
-
-    solar = _solar_frame(hourly.index, location)
-    hourly = _fill_gaps(hourly, solar, max_gap_hours, long_gap, report)
-
     for name in ("temp_C", "ghi_Wm2", "wind_speed_ms", "wind_dir_deg"):
         if name not in hourly.columns:
             raise ValueError(f"'{name}' has no values in {year}")
-        left = int(hourly[name].isna().sum())
-        if left:
-            raise ValueError(f"{left} hours of '{name}' are still missing after filling")
+    if "rh_pct" not in hourly.columns and "dewpoint_C" not in hourly.columns:
+        raise ValueError(f"humidity ('rh_pct' or 'dewpoint_C') has no values in {year}")
+
+    masks = _empty_month_masks(hourly) if empty_months == "allow" else {}
+    exclude = pd.DataFrame(index=hourly.index)
+    for variable, mask in masks.items():
+        for col in EMPTY_MONTH_VARIABLES[variable]:
+            exclude[col] = mask
+        months = sorted(set(hourly.index.month[mask]))
+        report.empty_months[variable] = [int(m) for m in months]
+    derived_dew = "rh_pct" in hourly.columns
+    if "temp_C" in masks and derived_dew:
+        # dew point computed from RH needs temperature: not a gap where temperature is empty
+        exclude["dewpoint_C"] = exclude.get("dewpoint_C", False) | masks["temp_C"]
+
+    solar = _solar_frame(hourly.index, location)
+    hourly = _fill_gaps(hourly, solar, max_gap_hours, long_gap, report, exclude=exclude if masks else None)
+
+    for name in ("temp_C", "ghi_Wm2", "wind_speed_ms", "wind_dir_deg"):
+        missing = hourly[name].isna()
+        if name in exclude.columns:
+            missing &= ~exclude[name]
+        if missing.any():
+            raise ValueError(f"{int(missing.sum())} hours of '{name}' are still missing after filling")
+
+    for variable, mask in masks.items():
+        for col in EMPTY_MONTH_VARIABLES[variable]:
+            if col in hourly.columns:
+                hourly.loc[mask, col] = _EMPTY_PLACEHOLDER[col]
+    if derived_dew and ("humidity" in masks or "temp_C" in masks):
+        # recompute dew point from (placeholder) temperature and RH so the two agree
+        redo = masks.get("humidity", False) | masks.get("temp_C", False)
+        if "dewpoint_C" in hourly.columns:
+            hourly.loc[redo, "dewpoint_C"] = np.nan
+        hourly = _complete_dewpoint_from_rh(hourly)
+    empty = {k: v.to_numpy() for k, v in masks.items()}
+    if "temp_C" in masks and not derived_dew:
+        # relative humidity is derived from temperature and dew point
+        empty["humidity"] = empty.get("humidity", np.zeros(len(hourly), bool)) | empty["temp_C"]
+    if report.partial:
+        report.notes.append("PARTIAL AMY: " + empty_months_text(report.empty_months))
 
     return derive_epw_rows(
         hourly, location, int(year), step=step, decomposition=decomposition,
         sky_cover_night=sky_cover_night, pressure_monthly_mean=climatology, report=report,
+        empty=empty,
     )
+
+
+def _empty_month_masks(hourly: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Variable -> rows of calendar months in which the variable has no value at all."""
+    months = pd.Series(hourly.index.month, index=hourly.index)
+    masks = {}
+    for variable, cols in EMPTY_MONTH_VARIABLES.items():
+        present = [c for c in cols if c in hourly.columns]
+        if not present:
+            continue
+        has = hourly[present].notna().any(axis=1).groupby(months).any()
+        empty = [int(m) for m in has.index if not has[m]]
+        if empty:
+            masks[variable] = months.isin(empty)
+    return masks
+
+
+def _fill_edges(
+    hourly: pd.DataFrame,
+    first: pd.Timestamp,
+    last: pd.Timestamp,
+    location: dict,
+    max_gap_hours: int,
+    report: AmyReport,
+) -> pd.DataFrame:
+    """Fill hours of the year outside the record's span from the adjacent day.
+
+    Irradiance and wind are copied; temperature, humidity, pressure, longwave
+    and snow depth keep the adjacent day's shape but are shifted so they join
+    the first (or last) recorded hour without a jump. The record itself must
+    reach the year: *first* and *last* are its first and last hour.
+    """
+    allowance = int(max_gap_hours) + int(np.ceil(abs(float(location["utc_offset"]))))
+    allowance = min(allowance, 24)
+    before = hourly.index < first
+    after = hourly.index > last
+    for mask, where, step in ((before, "starts", 24), (after, "ends", -24)):
+        n = int(mask.sum())
+        if not n:
+            continue
+        if n > allowance:
+            edge = "after the start" if where == "starts" else "before the end"
+            raise ValueError(
+                f"the table {where} {n} h {edge} of {hourly.index[0].year} in local standard time; "
+                f"at most {allowance} h can be filled from the adjacent day"
+            )
+        rows = hourly.index[mask]
+        source = hourly.reindex(rows + pd.Timedelta(hours=step))
+        source.index = rows
+        # the adjacent day's diurnal shape, shifted to meet the first (last) recorded hour
+        anchor = first if where == "starts" else last
+        twin = anchor + pd.Timedelta(hours=step)
+        for col in _LINEAR_COLUMNS:
+            if col in source.columns and anchor in hourly.index and twin in hourly.index:
+                shift = hourly.at[anchor, col] - hourly.at[twin, col]
+                if np.isfinite(shift):
+                    source[col] = source[col] + shift
+        if "rh_pct" in source.columns:
+            source["rh_pct"] = source["rh_pct"].clip(0, 100)
+        hourly.loc[rows] = source.to_numpy()
+        report.edge_filled_hours += n
+    if report.edge_filled_hours:
+        report.notes.append(
+            f"{report.edge_filled_hours} h at the edges of the year lie outside the record "
+            "(time-zone shift) and were copied from the adjacent day"
+        )
+    return hourly
 
 
 def _check_location(location: dict) -> None:
@@ -972,8 +1198,10 @@ def write_amy_epw(
     baseline period see a single year.
     """
     year = int(epw["year"].iloc[0])
+    partial = ("PARTIAL - " + empty_months_text(report.empty_months) + "; ") if report.partial else ""
     comments_2 = (
-        f"Actual meteorological year {year}; hourly means in local standard time, hour ending; "
+        partial
+        + f"Actual meteorological year {year}; hourly means in local standard time, hour ending; "
         + "; ".join(report_methods(report))
         + ("; " + attribution if attribution else "")
     )

@@ -40,6 +40,10 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on Python 3.9-3.13.
   EPW columns; shared with the station TMY), AMY build and writer
 - `amy_meteoswiss.py` — MeteoSwiss ogd-smn adapter
 - `station_tmy.py` — station table to ISO 15927-4 typical year EPW
+- `station_upload.py` — upload contract for the app: `read_station_parquet`,
+  `validate_station_table` (report only, never repairs), `table_for_builders`
+- `tests/data/station_upload/` — real-logger fixtures (reject / pass), built by
+  `scripts/prepare_station_upload_fixtures.py`; see the README there
 - `data/amy_diffuse_table.parquet` — diffuse-fraction grid, refitted with
   `scripts/build_amy_diffuse_table.py` (needs scikit-learn, not a dependency)
 - `epw.py` — `create_epw` via pyepwmorph's `Epw`; writes `Period of Record`
@@ -58,6 +62,14 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on Python 3.9-3.13.
 - Station timestamps are hour-ending; an EPW row of hour `h` is the interval
   ending `h:00` local standard time. Tables state their clock
   (`table_utc_offset`). No daylight saving.
+- An hour of sub-hourly data counts with at most one missing reading
+  (`max_missing_per_hour`); gaps up to `max_gap_hours` (6) are interpolated.
+- Validation reports and rejects; it never fills, clips or converts. The
+  builders' only fills are short-gap interpolation, edge hours outside the
+  record, and pressure from the station's monthly mean, all stated in the
+  report and COMMENTS 2.
+- A partial AMY (`empty_months="allow"`) writes EPW missing codes for whole
+  months and says so in COMMENTS 2.
 - Every typical-year EPW states `Period of Record=<first>-<last>` (the
   selection window) in COMMENTS 1, and each row's `year` is its month's
   source year.
@@ -75,6 +87,18 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on Python 3.9-3.13.
   methods `iso`, `zscore`, `ks`
 - `epw.create_epw(data, output_path, location_name, latitude, longitude,
   timezone, elevation, source_type, period_of_record=..., selected_years=...)`
+
+Station uploads (planned use, ADR-037 in the app):
+
+- `station_upload.read_station_parquet(path, max_rows=...)` returning `(table, issues)`
+- `station_upload.validate_station_table(table, latitude, longitude, utc_offset,
+  elevation=..., clock_tolerance_min=45, max_gap_hours=6)` returning a
+  `StationValidationReport` (`ok`, `issues`, `to_dict()`, `amy_years`,
+  `partial_amy_years`, `tmy_candidates`, `tmy_ready(min_years)`)
+- `station_upload.table_for_builders(table)`
+- `amy.station_table_to_epw(table, location, year, path, empty_months="allow")`
+  and its report's `partial`, `empty_months`; `station_tmy.station_table_to_tmy_epw(
+  table, location, period, path, min_years=5)`
 
 Changing any of these is a breaking change for the app: note it in the
 CHANGELOG and update the app in the same piece of work.

@@ -207,8 +207,19 @@ def test_ten_minute_aggregation_rules():
     assert hourly["sunshine_min"].iloc[0] == pytest.approx(12.0)
     direction = hourly["wind_dir_deg"].iloc[0]
     assert min(direction, 360 - direction) < 1.0  # 350 and 10 average to north, not south
+    # one missing reading per hour is tolerated: mean of the rest, sums scaled to the hour
     table.iloc[3, table.columns.get_loc("temp_C")] = np.nan
+    table.iloc[3, table.columns.get_loc("precip_mm")] = np.nan
+    hourly = amy.aggregate_to_hourly(table, LOCATION)[0]
+    assert hourly["temp_C"].iloc[0] == pytest.approx(np.mean([0, 1, 2, 4, 5]))
+    assert hourly["precip_mm"].iloc[0] == pytest.approx(0.6)
+    # two missing readings make the hour missing
+    table.iloc[4, table.columns.get_loc("temp_C")] = np.nan
     assert np.isnan(amy.aggregate_to_hourly(table, LOCATION)[0]["temp_C"].iloc[0])
+    # the old rule (no reading may be missing) is still available
+    table.iloc[4, table.columns.get_loc("temp_C")] = 4.0
+    strict = amy.aggregate_to_hourly(table, LOCATION, max_missing_per_hour=0)[0]
+    assert np.isnan(strict["temp_C"].iloc[0])
 
 
 def test_sub_hourly_variability_is_measured():

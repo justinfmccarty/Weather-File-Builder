@@ -4,6 +4,48 @@ All notable changes to weather-file-builder. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions before
 2.1.0 are described only by their git tags.
 
+## 2.2.0
+
+### Added
+- **Station upload contract** (`station_upload.py`) for the Boundary Conditions
+  app (its ADR-037). `read_station_parquet` checks the Parquet schema and row
+  count before reading. `validate_station_table` returns a
+  `StationValidationReport` (`ok`, `issues`, `to_dict()`, `to_text()`) and
+  never repairs anything:
+  - errors: missing or unknown columns, non-numeric columns, a `timestamp`
+    that is not a tz-aware UTC timestamp, duplicate or off-grid timestamps,
+    spacing other than 10/15/30/60 min, values outside `RANGES` (with unit
+    hints such as "looks like hPa"), half-hour time zones, and a clock check:
+    in every month the irradiance-weighted mean time of day (interval
+    mid-points) must be within `clock_tolerance_min` (default 45) of solar noon;
+  - warnings: tolerated values (irradiance down to -10 W/m2, RH up to 105 %),
+    clock offsets over 20 min, long gaps, months whose brighter hours stay
+    far from clear-sky irradiance, fewer than 10 typical-year candidates;
+  - gaps are reported, not rejected: `long_gaps`, `short_gap_hours`,
+    `month_status` per variable, `amy_years`, `partial_amy_years` and
+    `tmy_candidates` say what can be built.
+- `build_amy_dataframe(..., empty_months="allow")`: a required variable may
+  be entirely empty in a month (each variable on its own). Those months are
+  written with EPW missing codes, `report.empty_months` lists them,
+  `report.partial` is true and COMMENTS 2 starts with `PARTIAL - months
+  written with EPW missing codes: ...`.
+- Hours of an AMY year that fall outside the record because of the time-zone
+  shift (up to `max_gap_hours + ceil(|utc_offset|)`) are filled from the
+  adjacent day, shifted to join the record (`report.edge_filled_hours`).
+- Test fixtures from a real 1-minute logger in Zurich
+  (`tests/data/station_upload/`, built by
+  `scripts/prepare_station_upload_fixtures.py`): one the validator must
+  reject and one prepared file that builds a 2025 AMY.
+
+### Changed
+- `aggregate_to_hourly` (and the AMY and station TMY builders) keep an hour
+  with at most `max_missing_per_hour` missing sub-hourly readings (default 1;
+  before, any missing reading dropped the hour). Sums over an incomplete hour
+  are scaled to the full hour. `max_missing_per_hour=0` restores the old rule.
+  **10-minute AMYs and typical years can change slightly.**
+- Snow depth (`agg="last"`) takes the latest reading within the hour rather
+  than only the reading at the hour.
+
 ## 2.1.0
 
 ### Fixed

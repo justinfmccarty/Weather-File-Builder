@@ -68,6 +68,7 @@ def build_station_tmy_dataframe(
     join_method: str = "crossfade",
     decomposition: str = "auto",
     sky_cover_night: str = "interpolate",
+    max_missing_per_hour: int = 1,
 ) -> Tuple[pd.DataFrame, StationTmyReport]:
     """Build the 8760 EPW rows of an ISO 15927-4 typical year.
 
@@ -82,6 +83,8 @@ def build_station_tmy_dataframe(
         ``(1991, 2020)``. Written as the Period of Record.
     max_gap_hours, min_years
         See :func:`weather_file_builder.iso15927.select_typical_months`.
+        ISO 15927-4 asks for 10 years (the default); the Boundary Conditions
+        app passes 5 for user uploads and warns below 10.
     join_hours : int
         Hours either side of each month join that are smoothed (0 to disable).
     join_method : {"crossfade", "linear"}
@@ -91,11 +94,14 @@ def build_station_tmy_dataframe(
     sky_cover_night : {"interpolate", "auto"}
         ``"interpolate"`` (default) uses the same night method for every month;
         ``"auto"`` uses longwave in months that have it.
+    max_missing_per_hour : int
+        See :func:`weather_file_builder.amy.aggregate_to_hourly`.
     """
     amy._check_location(location)
     report = StationTmyReport()
     hourly, step = amy.aggregate_to_hourly(
-        table, location, timestamp_label=timestamp_label, table_utc_offset=table_utc_offset
+        table, location, timestamp_label=timestamp_label, table_utc_offset=table_utc_offset,
+        max_missing_per_hour=max_missing_per_hour,
     )
     report.source_step_minutes = step
     climatology = amy.pressure_climatology(hourly)

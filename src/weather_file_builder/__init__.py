@@ -17,6 +17,7 @@ from .core import (
 from .epw import create_epw
 from .iso15927 import select_typical_months
 from .station_tmy import build_station_tmy_dataframe, station_table_to_tmy_epw
+from .station_upload import read_station_parquet, validate_station_table
 from .tmy import create_tmy
 from .visualization import create_tmy_plot
 
@@ -33,4 +34,6 @@ __all__ = [
     "station_table_to_epw",
     "build_station_tmy_dataframe",
     "station_table_to_tmy_epw",
+    "read_station_parquet",
+    "validate_station_table",
 ]
